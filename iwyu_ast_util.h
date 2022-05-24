@@ -436,7 +436,8 @@ string PrintableTemplateName(const clang::TemplateName& tpl_name);
 string PrintableTemplateArgument(const clang::TemplateArgument& arg);
 string PrintableTemplateArgumentLoc(const clang::TemplateArgumentLoc& arg);
 string PrintableASTNode(const ASTNode* node);
-// This prints to errs().  It's useful for debugging (e.g. inside gdb).
+
+// These print to stderr. They're useful for debugging (e.g. inside gdb).
 void PrintASTNode(const ASTNode* node);
 void PrintStmt(const clang::Stmt* stmt);
 
@@ -815,6 +816,10 @@ const clang::FunctionType* GetCalleeFunctionType(clang::CallExpr* expr);
 // Returns the list of explicit template args for all exprs that support
 // such a concept (declrefexpr, memberexpr), and empty list if none is present.
 clang::TemplateArgumentListInfo GetExplicitTplArgs(const clang::Expr* expr);
+
+// Workaround for https://github.com/llvm/llvm-project/issues/53044. Remove this
+// wrapper in favor of Expr::getConversionFunction  when that is fixed upstream.
+const clang::NamedDecl* GetConversionFunction(const clang::CastExpr* expr);
 
 }  // namespace include_what_you_use
 

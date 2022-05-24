@@ -4,7 +4,7 @@
 
 For more in-depth documentation, see [docs](docs).
 
-## Instructions for Users ##
+## Instructions for users ##
 
 "Include what you use" means this: for every symbol (type, function, variable, or macro) that you use in `foo.cc` (or `foo.cpp`), either `foo.cc` or `foo.h` should include a .h file that exports the declaration of that symbol. (Similarly, for `foo_test.cc`, either `foo_test.cc` or `foo.h` should do the including.)  Obviously symbols defined in `foo.cc` itself are excluded from this requirement.
 
@@ -16,15 +16,13 @@ This is alpha quality software -- at best (as of July 2018).  It was originally 
 
 While we work to get IWYU quality up, we will be stinting new features, and will prioritize reported bugs along with the many existing, known bugs.  The best chance of getting a problem fixed is to submit a patch that fixes it (along with a test case that verifies the fix)!
 
-### How to Build ###
+### Clang compatibility ###
 
-Include-what-you-use makes heavy use of Clang internals, and will occasionally break when Clang is updated. Usually such discrepancies are detected by build bot and fixed promptly.
+Include-what-you-use makes heavy use of Clang internals, and will occasionally break when Clang is updated. We build IWYU regularly against Clang mainline to detect and fix such compatibility breaks as soon as possible.
 
-**The IWYU master branch follows Clang main branch**.
+NOTE: the IWYU master branch follows Clang main branch.
 
-We also have convenience tags and branches for released versions of Clang (called `clang_<version>`, e.g. `clang_5.0`). To build against a Clang release, check out the corresponding branch in IWYU before configuring the build. More details in the instructions below.
-
-We assume you already have compiled LLVM and Clang libraries on your system, either via packages for your platform or built from source. You can use this mapping table to combine Clang and IWYU versions correctly:
+We also have convenience tags and branches for released versions of Clang (called `clang_<version>`, e.g. `clang_5.0`). To build against a Clang release, check out the corresponding branch in IWYU before configuring the build. You can use this mapping table to combine Clang and IWYU versions correctly:
 
 | Clang | IWYU version | IWYU branch    |
 |-------|--------------|----------------|
@@ -42,6 +40,7 @@ We assume you already have compiled LLVM and Clang libraries on your system, eit
 | 11    | 0.15         | `clang_11`     |
 | 12    | 0.16         | `clang_12`     |
 | 13    | 0.17         | `clang_13`     |
+| 14    | 0.18         | `clang_14`     |
 | ...   | ...          | ...            |
 | main  |              | `master`       |
 
@@ -53,7 +52,9 @@ We assume you already have compiled LLVM and Clang libraries on your system, eit
 >
 > Packaging for other platforms will likely be subtly different.
 
-To set up an environment for building:
+### How to build standalone ###
+
+This build mode assumes you already have compiled LLVM and Clang libraries on your system, either via packages for your platform or built from source. To set up an environment for building IWYU:
 
 * Create a directory for IWYU development, e.g. `iwyu`
 
@@ -88,9 +89,18 @@ To set up an environment for building:
 
       iwyu/build$ make
 
-Instructions for building Clang are available at <https://clang.llvm.org/get_started.html>.
+### How to build as part of LLVM ###
 
-### How to Install ###
+Instructions for building LLVM and Clang are available at <https://clang.llvm.org/get_started.html>.
+
+To include IWYU in the LLVM build, use the `LLVM_EXTERNAL_PROJECTS` and `LLVM_EXTERNAL_*_SOURCE_DIR` CMake variables when configuring LLVM:
+
+      llvm-project/build$ cmake -G "Unix Makefiles" -DLLVM_ENABLE_PROJECTS=clang -DLLVM_EXTERNAL_PROJECTS=iwyu -DLLVM_EXTERNAL_IWYU_SOURCE_DIR=/path/to/iwyu /path/to/llvm-project/llvm
+      llvm-project/build$ make
+
+This builds all of LLVM, Clang and IWYU in a single tree.
+
+### How to install ###
 
 If you're building IWYU out-of-tree or installing pre-built binaries, you need to make sure it can find Clang built-in headers (`stdarg.h` and friends.)
 
@@ -104,23 +114,27 @@ So for IWYU to function correctly, you need to copy the Clang `include` director
 
 This weirdness is tracked in [issue 100](https://github.com/include-what-you-use/include-what-you-use/issues/100), hopefully we can make this more transparent over time.
 
-### How to Run ###
+### How to run ###
 
 The original design was built for Make, but a number of alternative run modes have come up over the years.
 
-#### Plugging into Make ####
+#### Running on single source file ####
 
-The easiest way to run IWYU over your codebase is to run
+The simplest way to use IWYU is to run it against a single source file:
 
-      make -k CXX=/path/to/llvm/Debug+Asserts/bin/include-what-you-use
+      include-what-you-use $CXXFLAGS myfile.cc
 
-or
+where `$CXXFLAGS` are the flags you would normally pass to the compiler.
 
-      make -k CXX=/path/to/llvm/Release/bin/include-what-you-use
+#### Plugging into existing build system ####
 
-(include-what-you-use always exits with an error code, so the build system knows it didn't build a .o file.  Hence the need for `-k`.)
+Typically there is already a build system containing the relevant compiler flags for all source files. Replace your compiler with `include-what-you-use` to generate a large batch of IWYU advice. Depending on your build system/build tools, this can take many forms, but for a simple GNU Make system it might look like this:
 
-Include-what-you-use only analyzes .cc (or .cpp) files built by `make`, along with their corresponding .h files.  If your project has a .h file with no corresponding .cc file, IWYU will ignore it unless you use the `--check_also` switch to add it for analysis together with a .cc file.
+      make -k CXX=include-what-you-use CXXFLAGS="-Xiwyu --error_always"
+
+(The additional `-Xiwyu --error_always` switch makes `include-what-you-use` always exit with an error code, so the build system knows it didn't build a .o file.  Hence the need for `-k`.)
+
+In this mode `include-what-you-use` only analyzes the .cc (or .cpp) files known to your build system, along with their corresponding .h files.  If your project has a .h file with no corresponding .cc file, IWYU will ignore it unless you use the `--check_also` switch to add it for analysis together with a .cc file. It is possible to run IWYU against individual header files, provided the compiler flags are carefully constructed to match all includers.
 
 #### Using with CMake ####
 
@@ -170,7 +184,7 @@ See `iwyu_tool.py --help` for more options.
 
 We also include a tool that automatically fixes up your source files based on the IWYU recommendations.  This is also alpha-quality software!  Here's how to use it (requires python):
 
-      make -k CXX=/path/to/llvm/Debug+Asserts/bin/include-what-you-use 2> /tmp/iwyu.out
+      make -k CXX=include-what-you-use CXXFLAGS="-Xiwyu --error_always" 2> /tmp/iwyu.out
       python fix_includes.py < /tmp/iwyu.out
 
 If you don't like the way `fix_includes.py` munges your `#include` lines, you can control its behavior via flags. `fix_includes.py --help` will give a full list, but these are some common ones:
@@ -178,7 +192,7 @@ If you don't like the way `fix_includes.py` munges your `#include` lines, you ca
 * `-b`: Put blank lines between system and Google includes
 * `--nocomments`: Don't add the 'why' comments next to includes
 
-### How to Correct IWYU Mistakes ###
+### How to correct IWYU mistakes ###
 
 * If `fix_includes.py` has removed an `#include` you actually need, add it back in with the comment '`// IWYU pragma: keep`' at the end of the `#include` line.  Note that the comment is case-sensitive.
 * If `fix_includes.py` has added an `#include` you don't need, just take it out.  We hope to come up with a more permanent way of fixing later.

@@ -44,6 +44,7 @@ using clang::SourceLocation;
 using clang::SourceRange;
 using clang::Token;
 using llvm::errs;
+using llvm::Optional;
 using llvm::StringRef;
 using std::make_pair;
 using std::string;
@@ -624,9 +625,7 @@ void IwyuPreprocessorInfo::MacroDefined(const Token& id,
   // #undefs and re-defines a macro, but should work fine in practice.)
   if (macro_loc.isValid())
     macros_definition_loc_[GetName(id)] = macro_loc;
-  for (MacroInfo::tokens_iterator it = macro->tokens_begin();
-       it != macro->tokens_end(); ++it) {
-    const Token& token_in_macro = *it;
+  for (const Token& token_in_macro : macro->tokens()) {
     if (token_in_macro.getKind() == clang::tok::identifier &&
         token_in_macro.getIdentifierInfo()->hasMacroDefinition()) {
       macros_called_from_macros_.push_back(token_in_macro);
@@ -670,7 +669,7 @@ void IwyuPreprocessorInfo::InclusionDirective(
     StringRef filename,
     bool is_angled,
     clang::CharSourceRange filename_range,
-    const FileEntry* file,
+    Optional<FileEntryRef> file,
     StringRef search_path,
     StringRef relative_path,
     const clang::Module* imported,

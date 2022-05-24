@@ -474,9 +474,8 @@ class BaseAstVisitor : public RecursiveASTVisitor<Derived> {
 
   bool VisitStmt(clang::Stmt* stmt) {
     if (ShouldPrintSymbolFromCurrentFile()) {
-      errs() << AnnotatedName(stmt->getStmtClassName()) << PrintablePtr(stmt);
-      PrintStmt(stmt);
-      errs() << "\n";
+      errs() << AnnotatedName(stmt->getStmtClassName()) << PrintablePtr(stmt)
+             << PrintableStmt(stmt) << "\n";
     }
     return true;
   }
@@ -973,8 +972,8 @@ class AstFlattenerVisitor : public BaseAstVisitor<AstFlattenerVisitor> {
   bool TraverseImplicitDestructorCall(clang::CXXDestructorDecl* decl,
                                       const Type* type) {
     VERRS(7) << GetSymbolAnnotation() << "[implicit dtor] "
-             << static_cast<void*>(decl)
-             << (decl ? PrintableDecl(decl) : "nullptr") << "\n";
+             << static_cast<void*>(decl) << " "
+             << PrintableDecl(decl) << "\n";
     AddAstNodeAsPointer(decl);
     return Base::TraverseImplicitDestructorCall(decl, type);
   }
@@ -983,8 +982,8 @@ class AstFlattenerVisitor : public BaseAstVisitor<AstFlattenerVisitor> {
                           const clang::Type* parent_type,
                           const clang::Expr* calling_expr) {
     VERRS(7) << GetSymbolAnnotation() << "[function call] "
-             << static_cast<void*>(callee)
-             << (callee ? PrintableDecl(callee) : "nullptr") << "\n";
+             << static_cast<void*>(callee) << " "
+             << PrintableDecl(callee) << "\n";
     AddAstNodeAsPointer(callee);
     return Base::HandleFunctionCall(callee, parent_type, calling_expr);
   }
@@ -999,9 +998,7 @@ class AstFlattenerVisitor : public BaseAstVisitor<AstFlattenerVisitor> {
   void AddCurrentAstNodeAsPointer() {
     if (ShouldPrint(7)) {
       errs() << GetSymbolAnnotation() << current_ast_node()->GetAs<void>()
-             << " ";
-      PrintASTNode(current_ast_node());
-      errs() << "\n";
+             << " " << PrintableASTNode(current_ast_node()) << "\n";
     }
     AddAstNodeAsPointer(current_ast_node()->GetAs<void>());
   }
@@ -1051,16 +1048,6 @@ struct VisitorState {
   // instantiated calls, we can't store the exprs themselves, but have
   // to store their location.)
   set<SourceLocation> processed_overload_locs;
-
-  // When we see a using declaration, we want to keep track of what
-  // file it's in, because other files may depend on that using
-  // declaration to get the names of their types right.  We want to
-  // make sure we don't replace an #include with a forward-declare
-  // when we might need the #include's using declaration.
-  // The key is the type being 'used', the FileEntry is the file
-  // that has the using decl.  If there are multiple using decls
-  // for a file, we prefer the one that has NamedDecl in it.
-  multimap<const NamedDecl*, const UsingDecl*> using_declarations;
 };
 
 // ----------------------------------------------------------------------
@@ -1532,16 +1519,18 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     const NamedDecl* target_decl = used_decl;
 
     // Sometimes a shadow decl comes between us and the 'real' decl.
-    if (const UsingShadowDecl* shadow_decl = DynCastFrom(used_decl))
+    const UsingDecl* using_decl = nullptr;
+    if (const auto* shadow_decl = dyn_cast<UsingShadowDecl>(used_decl)) {
       target_decl = shadow_decl->getTargetDecl();
+      using_decl = dyn_cast<UsingDecl>(shadow_decl->getIntroducer());
+    }
 
     // Map private decls like __normal_iterator to their public counterpart.
     target_decl = MapPrivateDeclToPublicDecl(target_decl);
     if (CanIgnoreDecl(target_decl))
       return;
 
-    const UseFlags use_flags =
-        ComputeUseFlags(current_ast_node()) | extra_use_flags;
+    UseFlags use_flags = ComputeUseFlags(current_ast_node()) | extra_use_flags;
 
     // Canonicalize the use location and report the use.
     used_loc = GetCanonicalUseLocation(used_loc, target_decl);
@@ -1561,9 +1550,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     // TODO(csilvers): maybe just insert our own using declaration
     // instead?  We can call it "Use what you use". :-)
     // TODO(csilvers): check for using statements and namespace aliases too.
-    if (const UsingDecl* using_decl
-        = GetUsingDeclarationOf(used_decl,
-              GetDeclContext(current_ast_node()))) {
+    if (using_decl) {
       preprocessor_info().FileInfoFor(used_in)->ReportUsingDeclUse(
           used_loc, using_decl, use_flags, "(for using decl)");
     }
@@ -1604,28 +1591,29 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     const NamedDecl* target_decl = used_decl;
 
     // Sometimes a shadow decl comes between us and the 'real' decl.
-    if (const UsingShadowDecl* shadow_decl = DynCastFrom(used_decl))
+    const UsingDecl* using_decl = nullptr;
+    if (const auto* shadow_decl = dyn_cast<UsingShadowDecl>(used_decl)) {
       target_decl = shadow_decl->getTargetDecl();
+      using_decl = dyn_cast<UsingDecl>(shadow_decl->getIntroducer());
+    }
 
     target_decl = MapPrivateDeclToPublicDecl(target_decl);
     if (CanIgnoreDecl(target_decl))
       return;
 
+    UseFlags use_flags = ComputeUseFlags(current_ast_node());
+
     // Canonicalize the use location and report the use.
     used_loc = GetCanonicalUseLocation(used_loc, target_decl);
     const FileEntry* used_in = GetFileEntry(used_loc);
     preprocessor_info().FileInfoFor(used_in)->ReportForwardDeclareUse(
-        used_loc, target_decl, ComputeUseFlags(current_ast_node()),
-        comment);
+        used_loc, target_decl, use_flags, comment);
 
     // If we're a use that depends on a using declaration, make sure
     // we #include the file with the using declaration.
-    if (const UsingDecl* using_decl
-        = GetUsingDeclarationOf(used_decl,
-              GetDeclContext(current_ast_node()))) {
+    if (using_decl) {
       preprocessor_info().FileInfoFor(used_in)->ReportUsingDeclUse(
-          used_loc, using_decl, ComputeUseFlags(current_ast_node()),
-          "(for using decl)");
+          used_loc, using_decl, use_flags, "(for using decl)");
     }
   }
 
@@ -1910,7 +1898,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     // If this cast requires a user-defined conversion of the from-type, look up
     // its return type so we can see through up/down-casts via such conversions.
     const Type* converted_from_type = nullptr;
-    if (const NamedDecl* conv_decl = expr->getConversionFunction()) {
+    if (const NamedDecl* conv_decl = GetConversionFunction(expr)) {
       converted_from_type =
           cast<FunctionDecl>(conv_decl)->getReturnType().getTypePtr();
     }
@@ -2606,16 +2594,6 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     return visitor_state_->preprocessor_info;
   }
 
-  void AddShadowDeclarations(const UsingDecl* using_decl) {
-    for (const UsingShadowDecl* shadow : using_decl->shadows()) {
-      if (const auto* introducer =
-              dyn_cast<UsingDecl>(shadow->getIntroducer())) {
-        visitor_state_->using_declarations.insert(
-            make_pair(shadow->getTargetDecl(), introducer));
-      }
-    }
-  }
-
  private:
   template <typename T> friend class IwyuBaseAstVisitor;
 
@@ -2625,34 +2603,6 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
 
   void AddProcessedOverloadLoc(SourceLocation loc) {
     visitor_state_->processed_overload_locs.insert(loc);
-  }
-
-  const UsingDecl* GetUsingDeclarationOf(const NamedDecl* decl,
-                                         const DeclContext* use_context) {
-    // First, if we have a UsingShadowDecl, then we don't need to do anything
-    // because we can just directly return the using decl from that.
-    if (const auto* shadow = dyn_cast<UsingShadowDecl>(decl)) {
-      return dyn_cast<UsingDecl>(shadow->getIntroducer());
-    }
-
-    // But, if we don't have a UsingShadowDecl, then we need to look through
-    // all the using-decls of the given decl.  We limit them to ones that are
-    // visible from the decl-context we're currently in (that is, what
-    // namespaces we're in), via the check through 'Encloses'. Of those, we
-    // pick the one that's in the same file as decl, if possible, otherwise we
-    // pick one arbitrarily.
-    const UsingDecl* retval = nullptr;
-    vector<const UsingDecl*> using_decls
-        = FindInMultiMap(visitor_state_->using_declarations, decl);
-    for (const UsingDecl* using_decl : using_decls) {
-      if (!using_decl->getDeclContext()->Encloses(use_context))
-        continue;
-      if (GetFileEntry(decl) == GetFileEntry(using_decl) || // prefer same file
-          retval == nullptr) {  // not in same file, but better than nothing
-        retval = using_decl;
-      }
-    }
-    return retval;
   }
 
   // Do not add any variables here!  If you do, they will not be shared
@@ -3651,14 +3601,8 @@ class IwyuAstConsumer
 
     // Check if any unrecoverable errors have occurred.
     // There is no point in continuing when the AST is in a bad state.
-    //
-    // EXIT_INVALIDARGS is not a great choice for the return status
-    // because a compile error will not have a strong connection to the
-    // command line arguments, but there are only 2 error codes and
-    // this is the least bad choice.
-    // TODO : Readdress when error codes are reworked.
     if (compiler()->getDiagnostics().hasUnrecoverableErrorOccurred())
-      exit(EXIT_INVALIDARGS);
+      exit(EXIT_FAILURE);
 
     const set<const FileEntry*>* const files_to_report_iwyu_violations_for
         = preprocessor_info().files_to_report_iwyu_violations_for();
@@ -3688,8 +3632,16 @@ class IwyuAstConsumer
     num_edits += preprocessor_info().FileInfoFor(main_file)
         ->CalculateAndReportIwyuViolations();
 
-    // We need to force the compile to fail so we can re-run.
-    exit(EXIT_SUCCESS_OFFSET + num_edits);
+    int exit_code = EXIT_SUCCESS;
+    if (GlobalFlags().exit_code_always) {
+      // If we should always fail, use --error_always value.
+      exit_code = GlobalFlags().exit_code_always;
+    } else if (num_edits > 0) {
+      // If there were IWYU violations, use --error value.
+      exit_code = GlobalFlags().exit_code_error;
+    }
+
+    exit(exit_code);
   }
 
   void ParseFunctionTemplates(Sema& sema, TranslationUnitDecl* tu_decl) {
@@ -3795,14 +3747,6 @@ class IwyuAstConsumer
   }
 
   bool VisitUsingDecl(clang::UsingDecl* decl) {
-    // If somebody in a different file tries to use one of these decls
-    // with the shortened name, then they had better #include us in
-    // order to get our using declaration.  We store the necessary
-    // information here.  Note: we have to store this even if this is
-    // an ast node we would otherwise ignore, since other AST nodes
-    // (which we might not ignore) can depend on it.
-    AddShadowDeclarations(decl);
-
     // The shadow decls hold the declarations for the var/fn/etc we're
     // using.  (There may be more than one if, say, we're using an
     // overloaded function.)  We don't want to add all of them at once
@@ -4212,6 +4156,8 @@ using include_what_you_use::IwyuAction;
 using include_what_you_use::CreateCompilerInstance;
 
 int main(int argc, char **argv) {
+  llvm::llvm_shutdown_obj scoped_shutdown;
+
   // X86 target is required to parse Microsoft inline assembly, so we hope it's
   // part of all targets. Clang parser will complain otherwise.
   llvm::InitializeAllTargetInfos();
@@ -4219,21 +4165,19 @@ int main(int argc, char **argv) {
   llvm::InitializeAllAsmParsers();
 
   // The command line should look like
-  //   path/to/iwyu -Xiwyu --verbose=4 [-Xiwyu --other_iwyu_flag]... CLANG_FLAGS... foo.cc
+  //   path/to/iwyu -Xiwyu --verbose=4 [-Xiwyu --other_iwyu_flag]... \
+  //       CLANG_FLAGS... foo.cc
   OptionsParser options_parser(argc, argv);
 
   std::unique_ptr<clang::CompilerInstance> compiler(CreateCompilerInstance(
       options_parser.clang_argc(), options_parser.clang_argv()));
-  if (compiler) {
-    // Create and execute the frontend to generate an LLVM bitcode module.
-    std::unique_ptr<clang::ASTFrontendAction> action(new IwyuAction);
-    compiler->ExecuteAction(*action);
+  if (!compiler) {
+    return EXIT_FAILURE;
   }
 
-  llvm::llvm_shutdown();
+  // Create and execute the frontend to generate an LLVM bitcode module.
+  std::unique_ptr<clang::ASTFrontendAction> action(new IwyuAction);
+  compiler->ExecuteAction(*action);
 
-  // We always return a failure exit code, to indicate we didn't
-  // successfully compile (produce a .o for) the source files we were
-  // given.
-  return 1;
+  return EXIT_SUCCESS;
 }
