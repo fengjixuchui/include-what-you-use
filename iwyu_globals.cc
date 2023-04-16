@@ -24,6 +24,7 @@
 #include "iwyu_location_util.h"
 #include "iwyu_path_util.h"
 #include "iwyu_port.h"  // for CHECK_, etc
+#include "iwyu_regex.h"
 #include "iwyu_stl_util.h"
 #include "iwyu_string_util.h"
 #include "iwyu_verrs.h"
@@ -90,8 +91,14 @@ static void PrintHelp(const char* extra_msg) {
          "        Note that this only affects comments and alignment thereof,\n"
          "        the maximum line length can still be exceeded with long\n"
          "        file names (default: 80).\n"
+         "   --comment_style=<level> set verbosity of 'why' comments to one\n"
+         "        of the following values:\n"
+         "          none:  do not add 'why' comments\n"
+         "          short: 'why' comments do not include namespaces\n"
+         "          long:  'why' comments include namespaces\n"
+         "        Default value is 'short'.\n"
          "   --no_comments: do not add 'why' comments.\n"
-         "   --update_comments: always add 'why' comments, even if no\n"
+         "   --update_comments: update and insert 'why' comments, even if no\n"
          "        #include lines need to be added or removed.\n"
          "   --no_fwd_decls: do not use forward declarations.\n"
          "   --verbose=<level>: the higher the level, the more output.\n"
@@ -101,6 +108,10 @@ static void PrintHelp(const char* extra_msg) {
          "   --error[=N]: exit with N (default: 1) for iwyu violations\n"
          "   --error_always[=N]: always exit with N (default: 1) (for use\n"
          "        with 'make -k')\n"
+         "   --debug=flag[,flag...]: debug flags (undocumented)\n"
+         "   --regex=<dialect>: use specified regex dialect in IWYU:\n"
+         "          llvm:       fast and simple (default)\n"
+         "          ecmascript: slower, but more feature-complete\n"
          "\n"
          "In addition to IWYU-specific options you can specify the following\n"
          "options without -Xiwyu prefix:\n"
@@ -185,11 +196,13 @@ CommandlineFlags::CommandlineFlags()
       pch_in_code(false),
       no_comments(false),
       update_comments(false),
+      comments_with_namespace(false),
       no_fwd_decls(false),
       quoted_includes_first(false),
       cxx17ns(false),
       exit_code_error(EXIT_SUCCESS),
-      exit_code_always(EXIT_SUCCESS) {
+      exit_code_always(EXIT_SUCCESS),
+      regex_dialect(RegexDialect::LLVM) {
   // Always keep Qt .moc includes; its moc compiler does its own IWYU analysis.
   keep.emplace("*.moc");
 }
@@ -205,6 +218,7 @@ int CommandlineFlags::ParseArgv(int argc, char** argv) {
     {"prefix_header_includes", required_argument, nullptr, 'x'},
     {"pch_in_code", no_argument, nullptr, 'h'},
     {"max_line_length", required_argument, nullptr, 'l'},
+    {"comment_style", required_argument, nullptr, 'i'},
     {"no_comments", no_argument, nullptr, 'o'},
     {"update_comments", no_argument, nullptr, 'u'},
     {"no_fwd_decls", no_argument, nullptr, 'f'},
@@ -212,9 +226,11 @@ int CommandlineFlags::ParseArgv(int argc, char** argv) {
     {"cxx17ns", no_argument, nullptr, 'C'},
     {"error", optional_argument, nullptr, 'e'},
     {"error_always", optional_argument, nullptr, 'a'},
+    {"debug", required_argument, nullptr, 'd'},
+    {"regex", required_argument, nullptr, 'r'},
     {nullptr, 0, nullptr, 0}
   };
-  static const char shortopts[] = "v:c:m:n";
+  static const char shortopts[] = "v:c:m:d:nr";
   while (true) {
     switch (getopt_long(argc, argv, shortopts, longopts, nullptr)) {
       case 'c': AddGlobToReportIWYUViolationsFor(optarg); break;
@@ -225,6 +241,18 @@ int CommandlineFlags::ParseArgv(int argc, char** argv) {
       case 'n': no_default_mappings = true; break;
       case 'o': no_comments = true; break;
       case 'u': update_comments = true; break;
+      case 'i':
+        if (strcmp(optarg, "none") == 0) {
+          no_comments = true;
+        } else if (strcmp(optarg, "short") == 0) {
+          comments_with_namespace = false;
+        } else if (strcmp(optarg, "long") == 0) {
+          comments_with_namespace = true;
+        } else {
+          PrintHelp("FATAL ERROR: unknown comment style.");
+          exit(EXIT_FAILURE);
+        }
+        break;
       case 'f': no_fwd_decls = true; break;
       case 'x':
         if (strcmp(optarg, "add") == 0) {
@@ -263,7 +291,25 @@ int CommandlineFlags::ParseArgv(int argc, char** argv) {
           exit(EXIT_FAILURE);
         }
         break;
-      case -1: return optind;   // means 'no more input'
+      case 'd': {
+        // Split argument on comma and save in global, ignoring empty elements.
+        vector<string> flags = Split(optarg, ",", 0);
+        dbg_flags.insert(flags.begin(),
+                         std::remove(flags.begin(), flags.end(), string()));
+        // Print all effective flags for traceability.
+        for (const string& f : dbg_flags) {
+          llvm::errs() << "Debug flag enabled: '" << f << "'\n";
+        }
+        break;
+      }
+      case 'r':
+        if (!ParseRegexDialect(optarg, &regex_dialect)) {
+          PrintHelp("FATAL ERROR: unsupported regex dialect.");
+          exit(EXIT_FAILURE);
+        }
+        break;
+      case -1:
+        return optind;  // means 'no more input'
       default:
         PrintHelp("FATAL ERROR: unknown flag.");
         exit(EXIT_FAILURE);
@@ -272,6 +318,10 @@ int CommandlineFlags::ParseArgv(int argc, char** argv) {
   }
 
   CHECK_UNREACHABLE_("All switches should be handled above");
+}
+
+bool CommandlineFlags::HasDebugFlag(const char* flag) const {
+  return dbg_flags.find(string(flag)) != dbg_flags.end();
 }
 
 // Though option -v prints version too, it isn't intercepted because it also
@@ -290,7 +340,8 @@ static int ParseInterceptedCommandlineFlags(int argc, char** argv) {
     switch (getopt_long(argc, argv, shortopts, longopts, nullptr)) {
       case 'h': PrintHelp(""); exit(EXIT_SUCCESS); break;
       case 'v': PrintVersion(); exit(EXIT_SUCCESS); break;
-      case -1: return optind;   // means 'no more input'
+      case -1:
+        return optind;  // means 'no more input'
       default:
         PrintHelp("FATAL ERROR: unknown flag.");
         exit(EXIT_FAILURE);
@@ -364,7 +415,15 @@ void InitGlobals(clang::SourceManager* sm, clang::HeaderSearch* header_search) {
   vector<HeaderSearchPath> search_paths =
       ComputeHeaderSearchPaths(header_search);
   SetHeaderSearchPaths(search_paths);
-  include_picker = new IncludePicker(GlobalFlags().no_default_mappings);
+  CStdLib cstdlib = CStdLib::Glibc;
+  CXXStdLib cxxstdlib = CXXStdLib::Libstdcxx;
+  if (GlobalFlags().no_default_mappings) {
+    cstdlib = CStdLib::None;
+    cxxstdlib = CXXStdLib::None;
+  }
+
+  include_picker =
+      new IncludePicker(GlobalFlags().regex_dialect, cstdlib, cxxstdlib);
   function_calls_full_use_cache = new FullUseCache;
   class_members_full_use_cache = new FullUseCache;
 
@@ -457,7 +516,16 @@ void InitGlobalsAndFlagsForTesting() {
   commandline_flags = new CommandlineFlags;
   source_manager = nullptr;
   data_getter = nullptr;
-  include_picker = new IncludePicker(GlobalFlags().no_default_mappings);
+  CStdLib cstdlib = CStdLib::Glibc;
+  CXXStdLib cxxstdlib = CXXStdLib::Libstdcxx;
+  if (GlobalFlags().no_default_mappings) {
+    cstdlib = CStdLib::None;
+    cxxstdlib = CXXStdLib::None;
+  }
+
+  include_picker =
+      new IncludePicker(GlobalFlags().regex_dialect, cstdlib, cxxstdlib);
+
   function_calls_full_use_cache = new FullUseCache;
   class_members_full_use_cache = new FullUseCache;
 

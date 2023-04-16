@@ -10,6 +10,7 @@
 #include "iwyu_location_util.h"
 
 #include "iwyu_ast_util.h"
+#include "iwyu_port.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/DeclCXX.h"
@@ -28,6 +29,7 @@ using clang::CXXMethodDecl;
 using clang::CXXOperatorCallExpr;
 using clang::ClassTemplateSpecializationDecl;
 using clang::ConditionalOperator;
+using clang::FileEntry;
 using clang::FunctionDecl;
 using clang::MemberExpr;
 using clang::SourceLocation;
@@ -62,7 +64,8 @@ namespace include_what_you_use {
 //    Note the two issues can both be present, if an implicit method's
 // parent is an implicit instantiation.
 SourceLocation GetLocation(const clang::Decl* decl) {
-  if (decl == nullptr)  return SourceLocation();
+  if (decl == nullptr)
+    return SourceLocation();
 
   if (const CXXMethodDecl* method_decl = DynCastFrom(decl)) {
     if (method_decl->isImplicit())
@@ -118,7 +121,8 @@ static SourceLocation GetMemberExprLocation(const MemberExpr* member_expr) {
 }
 
 SourceLocation GetLocation(const clang::Stmt* stmt) {
-  if (stmt == nullptr)  return SourceLocation();
+  if (stmt == nullptr)
+    return SourceLocation();
   // For some expressions, we take the location to be the 'key' part
   // of the expression, not the beginning.  For instance, the
   // location of 'a << b' is the '<<', not the 'a'.  This is
@@ -129,18 +133,16 @@ SourceLocation GetLocation(const clang::Stmt* stmt) {
     return call_expr->getOperatorLoc();
   } else if (const MemberExpr* member_expr = DynCastFrom(stmt)) {
     return GetMemberExprLocation(member_expr);
-  } else if (const UnresolvedMemberExpr* member_expr
-             = DynCastFrom(stmt)) {
+  } else if (const UnresolvedMemberExpr* member_expr = DynCastFrom(stmt)) {
     if (member_expr->getOperatorLoc().isValid())
       return member_expr->getOperatorLoc();
-  } else if (const CXXDependentScopeMemberExpr* member_expr
-             = DynCastFrom(stmt)) {
+  } else if (const CXXDependentScopeMemberExpr* member_expr =
+                 DynCastFrom(stmt)) {
     if (member_expr->getOperatorLoc().isValid())
       return member_expr->getOperatorLoc();
   } else if (const BinaryOperator* binary_op = DynCastFrom(stmt)) {
     return binary_op->getOperatorLoc();
-  } else if (const ConditionalOperator* conditional_op =
-             DynCastFrom(stmt)) {
+  } else if (const ConditionalOperator* conditional_op = DynCastFrom(stmt)) {
     return conditional_op->getQuestionLoc();
   } else if (const UnaryOperator* unary_op = DynCastFrom(stmt)) {
     // Drill through unary operators and parentheses, to get at the underlying
@@ -152,22 +154,35 @@ SourceLocation GetLocation(const clang::Stmt* stmt) {
 }
 
 SourceLocation GetLocation(const clang::TypeLoc* typeloc) {
-  if (typeloc == nullptr)  return SourceLocation();
+  if (typeloc == nullptr)
+    return SourceLocation();
   return typeloc->getBeginLoc();
 }
 
 SourceLocation GetLocation(const clang::NestedNameSpecifierLoc* nnsloc) {
-  if (nnsloc == nullptr)  return SourceLocation();
+  if (nnsloc == nullptr)
+    return SourceLocation();
   return nnsloc->getBeginLoc();
 }
 
 SourceLocation GetLocation(const clang::TemplateArgumentLoc* argloc) {
-  if (argloc == nullptr)  return SourceLocation();
+  if (argloc == nullptr)
+    return SourceLocation();
   return argloc->getLocation();
 }
 
 bool IsInScratchSpace(SourceLocation loc) {
   return StartsWith(PrintableLoc(GetSpellingLoc(loc)), "<scratch space>");
+}
+
+bool IsInHeader(const clang::Decl* decl) {
+  const FileEntry* containing_file = GetFileEntry(decl);
+  if (!containing_file) {
+    // This is a builtin, or something is terribly wrong.
+    // At any rate, we're not in a header.
+    return false;
+  }
+  return !GlobalSourceManager()->isMainFile(*containing_file);
 }
 
 }  // namespace include_what_you_use

@@ -102,10 +102,14 @@ class ASTNode {
   // A 'forward-declare' context means some parent of us can be
   // forward-declared, which means we can be too.  e.g. in
   // MyClass<Foo>* x, Foo is fwd-declarable because MyClass<Foo> is.
-  bool in_forward_declare_context() const { return in_fwd_decl_context_; }
+  bool in_forward_declare_context() const {
+    return in_fwd_decl_context_;
+  }
   void set_in_forward_declare_context(bool b) { in_fwd_decl_context_ = b; }
 
-  const ASTNode* parent() const { return parent_; }
+  const ASTNode* parent() const {
+    return parent_;
+  }
   void SetParent(const ASTNode* parent) {
     parent_ = parent;
     if (parent)  // We inherit this from parent.
@@ -232,11 +236,13 @@ class ASTNode {
   // the same type hierarchy.  So To must be specified both in the
   // template arg and in the method parameter.
   template<typename To> const To* DynCast(const clang::Decl*) const {
-    if (kind_ != kDeclKind) return nullptr;
+    if (kind_ != kDeclKind)
+      return nullptr;
     return ::llvm::dyn_cast<To>(as_decl_);
   }
   template<typename To> const To* DynCast(const clang::Stmt*) const {
-    if (kind_ != kStmtKind) return nullptr;
+    if (kind_ != kStmtKind)
+      return nullptr;
     return ::llvm::dyn_cast<To>(as_stmt_);
   }
   template<typename To> const To* DynCast(const clang::Type*) const {
@@ -247,11 +253,13 @@ class ASTNode {
     //   if (node.IsA<FooTypeLoc>()) ... else if (node.IsA<FooType>()) ...
     if (kind_ == kTypelocKind)
       return ::llvm::dyn_cast<To>(as_typeloc_->getTypePtr());
-    if (kind_ != kTypeKind) return nullptr;
+    if (kind_ != kTypeKind)
+      return nullptr;
     return ::llvm::dyn_cast<To>(as_type_);
   }
   template<typename To> const To* DynCast(const clang::TypeLoc*) const {
-    if (kind_ != kTypelocKind) return nullptr;
+    if (kind_ != kTypelocKind)
+      return nullptr;
     return ::llvm::dyn_cast<To>(as_typeloc_);
   }
   template<typename To> const To* DynCast(
@@ -260,16 +268,19 @@ class ASTNode {
     // that cares to distinguish, it should check for nnslocs first.
     if (kind_ == kNNSLocKind)
       return as_nnsloc_->getNestedNameSpecifier();
-    if (kind_ != kNNSKind) return nullptr;
+    if (kind_ != kNNSKind)
+      return nullptr;
     return as_nns_;
   }
   template<typename To> const To* DynCast(
       const clang::NestedNameSpecifierLoc*) const {
-    if (kind_ != kNNSLocKind) return nullptr;
+    if (kind_ != kNNSLocKind)
+      return nullptr;
     return as_nnsloc_;
   }
   template<typename To> const To* DynCast(const clang::TemplateName*) const {
-    if (kind_ != kTemplateNameKind) return nullptr;
+    if (kind_ != kTemplateNameKind)
+      return nullptr;
     return as_template_name_;
   }
   template<typename To> const To* DynCast(
@@ -280,26 +291,37 @@ class ASTNode {
     // distinguish, it should check for typelocs first.
     if (kind_ == kTemplateArgumentLocKind)
       return &as_template_argloc_->getArgument();
-    if (kind_ != kTemplateArgumentKind) return nullptr;
+    if (kind_ != kTemplateArgumentKind)
+      return nullptr;
     return as_template_arg_;
   }
   template<typename To> const To* DynCast(
       const clang::TemplateArgumentLoc*) const {
-    if (kind_ != kTemplateArgumentLocKind) return nullptr;
+    if (kind_ != kTemplateArgumentLocKind)
+      return nullptr;
     return as_template_argloc_;
   }
   // We also allow casting to void*
   template<typename Ignored> const void* DynCast(const void*) const {
     switch (kind_) {   // this is just to avoid aliasing violations.
-      case kDeclKind:  return as_decl_;
-      case kStmtKind:  return as_stmt_;
-      case kTypeKind:  return as_type_;
-      case kTypelocKind:  return as_typeloc_;
-      case kNNSKind:  return as_nns_;
-      case kNNSLocKind:  return as_nnsloc_;
-      case kTemplateNameKind:  return as_template_name_;
-      case kTemplateArgumentKind:  return as_template_arg_;
-      case kTemplateArgumentLocKind:  return as_template_argloc_;
+      case kDeclKind:
+        return as_decl_;
+      case kStmtKind:
+        return as_stmt_;
+      case kTypeKind:
+        return as_type_;
+      case kTypelocKind:
+        return as_typeloc_;
+      case kNNSKind:
+        return as_nns_;
+      case kNNSLocKind:
+        return as_nnsloc_;
+      case kTemplateNameKind:
+        return as_template_name_;
+      case kTemplateArgumentKind:
+        return as_template_arg_;
+      case kTemplateArgumentLocKind:
+        return as_template_argloc_;
     }
     CHECK_UNREACHABLE_("Unknown kind");
   }
@@ -368,10 +390,10 @@ class CurrentASTNodeUpdater {
 // elaboration is 'class Foo myvar' instead of just 'Foo myvar'.)
 // We avoid 'fake' elaborations that are caused because clang also
 // uses ElaboratedType for namespaces ('ns::Foo myvar').
-bool IsElaborationNode(const ASTNode* ast_node);
+bool IsElaboratedTypeSpecifier(const ASTNode* ast_node);
 
 // Walk up to parents of the given node so long as each parent is an
-// elaboration node (in the sense of IsElaborationNode).
+// elaborated type node.
 // Can expand from a node representing 'X' to e.g. 'struct X' or 'mylib::X'.
 const ASTNode* MostElaboratedAncestor(const ASTNode* ast_node);
 
@@ -390,11 +412,11 @@ bool IsNodeInsideCXXMethodBody(const ASTNode* ast_node);
 // These flags provide context around the use to help later IWYU analysis,
 UseFlags ComputeUseFlags(const ASTNode* ast_node);
 
-// Return true if we're a nested class as written, that is, we're a
-// class decl inside another class decl.  The parent class may be
+// Return true if we're a nested tag type as written, that is, we're a
+// class or enum decl inside another class decl.  The parent class may be
 // templated, but we should not be.  (We could extend the function to
 // handle that case, but there's been no need yet.)
-bool IsNestedClassAsWritten(const ASTNode* ast_node);
+bool IsNestedTagAsWritten(const ASTNode* ast_node);
 
 // Is ast_node the 'D' in the following:
 //    template<template <typename A> class T = D> class C { ... }
@@ -412,11 +434,6 @@ bool IsCXXConstructExprInNewExpr(const ASTNode* ast_node);
 // If ASTNode is of a kind that has a qualifier (something that
 // comes before the ::), return that, else return nullptr.
 const clang::NestedNameSpecifier* GetQualifier(const ASTNode* ast_node);
-
-// Returns true if any parent is a typedef: my_typedef.a, or
-// MyTypedef::a, or MyTypedef::subclass::a, etc.  Note it does
-// *not* return true if the ast_node itself is a typedef.
-bool IsMemberOfATypedef(const ASTNode* ast_node);
 
 // Returns the decl-context of the deepest decl in the ast-chain.
 const clang::DeclContext* GetDeclContext(const ASTNode* ast_node);
@@ -501,9 +518,9 @@ bool HasImplicitConversionCtor(const clang::CXXRecordDecl* cxx_class);
 // compared to its base.
 bool HasCovariantReturnType(const clang::CXXMethodDecl* method_decl);
 
-// If this decl is a (possibly templatized) class, return the decl
+// If this decl is a (possibly templatized) tag decl, return the decl
 // that defines the class, if present.  Otherwise return nullptr.
-const clang::RecordDecl* GetDefinitionForClass(const clang::Decl* decl);
+const clang::TagDecl* GetTagDefinition(const clang::Decl* decl);
 
 // Given a class, returns a SourceRange that encompasses the beginning
 // of the class declaration (including template<> prefix, etc) to the
@@ -601,7 +618,7 @@ bool IsInInlineNamespace(const clang::Decl* decl);
 bool IsForwardDecl(const clang::NamedDecl* decl);
 
 // Returns true if this decl is defined inside another class/struct.
-// Unlike IsNestedClassAsWritten(), which works on an ASTNode, this
+// Unlike IsNestedTagAsWritten(), which works on an ASTNode, this
 // function considers decl to be nested even if it's not syntactically
 // written inside its outer class (that is, 'class Foo::Bar {...}' is
 // considered nested, even though it's not written inside Foo).
@@ -617,20 +634,20 @@ bool HasDefaultTemplateParameters(const clang::TemplateDecl* decl);
 // treats classes different from other redeclarable types, it has
 // its own separate function.  (If that proves to be annoying, we
 // can merge them.)
-set<const clang::NamedDecl*> GetNonclassRedecls(const clang::NamedDecl* decl);
+set<const clang::NamedDecl*> GetNonTagRedecls(const clang::NamedDecl* decl);
 
 // Given a class, returns a set of all declarations of that class
 // (forward-declarations and, if present, the definition).  This
-// accepts both RecordDecls and ClassTemplateDecls -- the return Decls
+// accepts both TagDecls and ClassTemplateDecls -- the return Decls
 // are guaranteed to be of the same type as the input Decl.  Returns
-// the empty set if the input is not a RecordDecl or
-// ClassTemplateDecl.  Otherwise, always returns at least one element
-// (since the input decl is its own redecl).
-set<const clang::NamedDecl*> GetClassRedecls(const clang::NamedDecl* decl);
+// the empty set if the input is not a TagDecl or ClassTemplateDecl.
+// Otherwise, always returns at least one element (since the input
+// decl is its own redecl).
+set<const clang::NamedDecl*> GetTagRedecls(const clang::NamedDecl* decl);
 
 // Returns the redecl of decl that occurs first in the translation
 // unit (that is, is the first one you'd see if you did 'cc -E').
-// Returns nullptr if the input is not a RecordDecl or ClassTemplateDecl.
+// Returns nullptr if the input is not a TagDecl or ClassTemplateDecl.
 const clang::NamedDecl* GetFirstRedecl(const clang::NamedDecl* decl);
 
 // Given a class or class template, returns the declaration of that
@@ -639,7 +656,7 @@ const clang::NamedDecl* GetFirstRedecl(const clang::NamedDecl* decl);
 const clang::ClassTemplateDecl* GetClassRedeclSpecifyingDefaultTplArgs(
     const clang::ClassTemplateDecl* decl);
 
-// Picks one redecl from GetClassRedecls() arbitrarily.
+// Picks one redecl from GetTagRedecls() arbitrarily.
 // This is used to recover from the clang bug that mixes friend decls
 // with 'real' redecls (http://llvm.org/bugs/show_bug.cgi?id=8669);
 // this function returns a 'real' redecl.  If the input decl is a
@@ -668,30 +685,23 @@ const clang::Type* GetTypeOf(const clang::TypeDecl* decl);
 // Template parameters are always reduced to the canonical type.
 const clang::Type* GetCanonicalType(const clang::Type* type);
 
+// Use Desugar to walk down the AST skipping type sugar nodes until a non-sugar
+// node is found, much like Type::getUnqualifiedDesugaredType.
+// IWYU has a slightly more liberal notion of sugar than Clang does:
+// typedefs, using types and template specializations are not considered sugar,
+// because they need to be respected in IWYU analysis.
+const clang::Type* Desugar(const clang::Type* type);
+
 // A 'component' of a type is a type beneath it in the AST tree.
 // So 'Foo*' has component 'Foo', as does 'vector<Foo>', while
 // vector<pair<Foo, Bar>> has components pair<Foo,Bar>, Foo, and Bar.
 set<const clang::Type*> GetComponentsOfType(const clang::Type* type);
-
-// The ElaborationType -- which says whether a type is preceded by
-// 'class' or 'struct' ('class Foo'), or whether the type-name has a
-// namespace ('ns::Foo') -- often pops where it's not wanted.  This
-// removes the elaboration if it exists, else it's a noop.  Note that
-// if the type has both kinds of elaborations ('struct ns::Foo'), they
-// will both be removed.
-const clang::Type* RemoveElaboration(const clang::Type* type);
 
 // Returns true if the type has any template arguments.
 bool IsTemplatizedType(const clang::Type* type);
 
 // Returns true if the type is a RecordType or a TemplateSpecializationType.
 bool IsClassType(const clang::Type* type);
-
-// Read past SubstTemplateTypeParmType to the underlying type, if type
-// is itself a SubstTemplateTypeParmType.  Thus: T is converted to int
-// if we are parsing a template instantiated with T being int.
-// However, vector<T> is *not* converted to vector<int>.
-const clang::Type* RemoveSubstTemplateTypeParm(const clang::Type* type);
 
 // Returns true if any type involved (recursively examining template
 // arguments) satisfies the given predicate.
@@ -777,6 +787,12 @@ map<const clang::Type*, const clang::Type*> GetTplTypeResugarMapForClass(
 map<const clang::Type*, const clang::Type*>
 GetTplTypeResugarMapForClassNoComponentTypes(const clang::Type* type);
 
+// Returns true if, for the given enumeration type, opaque (i.e. forward,
+// in fact) declarations are allowed. It means that the enumeration should be
+// either scoped or unscoped with explicitly stated underlying type,
+// according to the standard.
+bool CanBeOpaqueDeclared(const clang::EnumType* type);
+
 // --- Utilities for Stmt.
 
 // Returns true if the given expr is '&<something>'.
@@ -817,9 +833,15 @@ const clang::FunctionType* GetCalleeFunctionType(clang::CallExpr* expr);
 // such a concept (declrefexpr, memberexpr), and empty list if none is present.
 clang::TemplateArgumentListInfo GetExplicitTplArgs(const clang::Expr* expr);
 
-// Workaround for https://github.com/llvm/llvm-project/issues/53044. Remove this
-// wrapper in favor of Expr::getConversionFunction  when that is fixed upstream.
-const clang::NamedDecl* GetConversionFunction(const clang::CastExpr* expr);
+// Return the kind- or class-name for various AST node types.
+std::string GetKindName(const clang::Decl* decl);
+std::string GetKindName(const clang::Stmt* stmt);
+std::string GetKindName(const clang::Type* type);
+std::string GetKindName(const clang::TypeLoc typeloc);
+
+// Returns true if decl is entirely inside a function, which implies it's only
+// visible from said function.
+bool IsDeclaredInsideFunction(const clang::Decl* decl);
 
 }  // namespace include_what_you_use
 

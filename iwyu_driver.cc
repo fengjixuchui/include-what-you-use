@@ -19,22 +19,22 @@
 #include <string>
 #include <utility>
 
-#include "llvm/ADT/ArrayRef.h"  // IWYU pragma: keep
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/Triple.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/ErrorOr.h"
-#include "llvm/Support/Host.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/Triple.h"
 #include "clang/Basic/DiagnosticOptions.h"
+#include "clang/Basic/DiagnosticFrontend.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/Tool.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendAction.h"
-#include "clang/Frontend/FrontendDiagnostic.h"  // IWYU pragma: keep
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 
 namespace llvm {
@@ -175,6 +175,12 @@ CompilerInstance* CreateCompilerInstance(int argc, const char **argv) {
 
   ExpandArgv(argc, argv, args, SavedStrings);
 
+  // Drop -save-temps arguments to avoid multiple compilation jobs.
+  llvm::erase_if(args, [](const char *v) {
+    StringRef arg(v);
+    return arg.startswith("-save-temps") || arg.startswith("--save-temps");
+  });
+
   // FIXME: This is a hack to try to force the driver to do something we can
   // recognize. We need to extend the driver library to support this use model
   // (basically, exactly one input, and the operation mode is hard wired).
@@ -208,20 +214,6 @@ CompilerInstance* CreateCompilerInstance(int argc, const char **argv) {
   std::shared_ptr<CompilerInvocation> invocation(new CompilerInvocation);
   CompilerInvocation::CreateFromArgs(*invocation, cc_arguments, diagnostics);
   invocation->getFrontendOpts().DisableFree = false;
-
-  // Use libc++ headers bundled with Xcode.app on macOS.
-  llvm::Triple triple(invocation->getTargetOpts().Triple);
-  if (triple.isOSDarwin() && invocation->getHeaderSearchOpts().UseLibcxx) {
-    invocation->getHeaderSearchOpts().AddPath(
-        "/Library/Developer/CommandLineTools/usr/include/c++/v1/",
-        clang::frontend::CXXSystem,
-        /*IsFramework=*/false, /*IgnoreSysRoot=*/true);
-    invocation->getHeaderSearchOpts().AddPath(
-        "/Applications/Xcode.app/Contents/Developer/Toolchains/"
-        "XcodeDefault.xctoolchain/usr/include/c++/v1",
-        clang::frontend::CXXSystem,
-        /*IsFramework=*/false, /*IgnoreSysRoot=*/true);
-  }
 
   // Show the invocation, with -v.
   if (invocation->getHeaderSearchOpts().Verbose) {

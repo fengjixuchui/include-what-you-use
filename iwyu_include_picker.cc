@@ -16,7 +16,6 @@
 // not hash_map: it's not as portable and needs hash<string>.
 #include <map>                          // for map, map<>::mapped_type, etc
 #include <memory>
-#include <regex>
 #include <string>                       // for string, basic_string, etc
 #include <system_error>                 // for error_code
 #include <utility>                      // for pair, make_pair
@@ -25,6 +24,7 @@
 #include "iwyu_location_util.h"
 #include "iwyu_path_util.h"
 #include "iwyu_port.h"
+#include "iwyu_regex.h"
 #include "iwyu_stl_util.h"
 #include "iwyu_string_util.h"
 #include "iwyu_verrs.h"
@@ -120,6 +120,7 @@ const IncludeMapEntry libc_symbol_map[] = {
   { "fsblkcnt_t", kPrivate, "<sys/statvfs.h>", kPublic },
   { "fsfilcnt_t", kPrivate, "<sys/types.h>", kPublic },
   { "fsfilcnt_t", kPrivate, "<sys/statvfs.h>", kPublic },
+  { "getopt", kPrivate, "<unistd.h>", kPublic },
   { "gid_t", kPrivate, "<sys/types.h>", kPublic },
   { "gid_t", kPrivate, "<grp.h>", kPublic },
   { "gid_t", kPrivate, "<pwd.h>", kPublic },
@@ -150,6 +151,10 @@ const IncludeMapEntry libc_symbol_map[] = {
   { "uint64_t", kPrivate, "<stdint.h>", kPublic },
   { "intptr_t", kPrivate, "<stdint.h>", kPublic },
   { "uintptr_t", kPrivate, "<stdint.h>", kPublic },
+  { "iovec", kPrivate, "<sys/uio.h>", kPublic },
+  { "iovec", kPrivate, "<sys/socket.h>", kPublic },
+  { "itimerspec", kPrivate, "<time.h>", kPublic },
+  { "itimerspec", kPrivate, "<sys/timerfd.h>", kPublic },
   { "key_t", kPrivate, "<sys/types.h>", kPublic },
   { "key_t", kPrivate, "<sys/ipc.h>", kPublic },
   { "lconv", kPrivate, "<locale.h>", kPublic },
@@ -176,6 +181,10 @@ const IncludeMapEntry libc_symbol_map[] = {
   { "off_t", kPrivate, "<sys/mman.h>", kPublic },
   { "off_t", kPrivate, "<sys/stat.h>", kPublic },
   { "off_t", kPrivate, "<unistd.h>", kPublic },
+  { "optarg", kPrivate, "<unistd.h>", kPublic },
+  { "opterr", kPrivate, "<unistd.h>", kPublic },
+  { "optind", kPrivate, "<unistd.h>", kPublic },
+  { "optopt", kPrivate, "<unistd.h>", kPublic },
   { "pid_t", kPrivate, "<sys/types.h>", kPublic },
   { "pid_t", kPrivate, "<fcntl.h>", kPublic },
   { "pid_t", kPrivate, "<sched.h>", kPublic },
@@ -243,6 +252,7 @@ const IncludeMapEntry libc_symbol_map[] = {
   { "timeval", kPrivate, "<sys/resource.h>", kPublic },
   { "timeval", kPrivate, "<sys/select.h>", kPublic },
   { "timeval", kPrivate, "<utmpx.h>", kPublic },
+  { "tm", kPrivate, "<time.h>", kPublic },
   { "u_char", kPrivate, "<sys/types.h>", kPublic },
   { "u_char", kPrivate, "<rpc/types.h>", kPublic },
   { "uid_t", kPrivate, "<sys/types.h>", kPublic },
@@ -293,8 +303,13 @@ const IncludeMapEntry libc_symbol_map[] = {
   { "EOF", kPrivate, "<stdio.h>", kPublic },
   { "EOF", kPrivate, "<libio.h>", kPublic },
   { "FILE", kPrivate, "<stdio.h>", kPublic },
+  { "MAP_POPULATE", kPrivate, "<sys/mman.h>", kPublic },
+  { "MAP_POPULATE", kPrivate, "<linux/mman.h>", kPublic },
   { "MAP_STACK", kPrivate, "<sys/mman.h>", kPublic },
   { "MAP_STACK", kPrivate, "<linux/mman.h>", kPublic },
+  { "MAXHOSTNAMELEN", kPrivate, "<sys/param.h>", kPublic },
+  { "MAXHOSTNAMELEN", kPrivate, "<protocols/timed.h>", kPublic },
+  { "SIGABRT", kPrivate, "<signal.h>", kPublic },
   { "SIGCHLD", kPrivate, "<signal.h>", kPublic },
   { "SIGCHLD", kPrivate, "<linux/signal.h>", kPublic },
   { "va_list", kPrivate, "<stdarg.h>", kPublic },
@@ -320,12 +335,13 @@ const IncludeMapEntry libc_symbol_map[] = {
   { "NULL", kPrivate, "<stdlib.h>", kPublic },
   { "NULL", kPrivate, "<string.h>", kPublic },
   { "NULL", kPrivate, "<time.h>", kPublic },
+  { "NULL", kPrivate, "<unistd.h>", kPublic },
   { "NULL", kPrivate, "<wchar.h>", kPublic },
 };
 
-// Symbol -> include mappings for GNU libstdc++
-const IncludeMapEntry libstdcpp_symbol_map[] = {
-  // Kludge time: almost all STL types take an allocator, but they
+// Common kludges for C++ standard libraries
+const IncludeMapEntry stdlib_cxx_symbol_map[] = {
+  // Almost all STL types take an allocator, but they
   // almost always use the default value.  Usually we detect that
   // and don't try to do IWYU, but sometimes it passes through.
   // For instance, when adding two strings, we end up calling
@@ -356,6 +372,12 @@ const IncludeMapEntry libstdcpp_symbol_map[] = {
   { "std::size_t", kPrivate, "<ctime>", kPublic },
   { "std::size_t", kPrivate, "<cuchar>", kPublic },
   { "std::size_t", kPrivate, "<cwchar>", kPublic },
+};
+
+// Symbol -> include mappings for GNU libstdc++
+const IncludeMapEntry libstdcpp_symbol_map[] = {
+  // GCC defines std::declval in <type_traits>, but the canonical location is <utility>
+  { "std::declval", kPrivate, "<utility>", kPublic },
 };
 
 const IncludeMapEntry libc_include_map[] = {
@@ -399,6 +421,7 @@ const IncludeMapEntry libc_include_map[] = {
   { "<bits/mathdef.h>", kPrivate, "<math.h>", kPublic },
   { "<bits/mathinline.h>", kPrivate, "<math.h>", kPublic },
   { "<bits/mman.h>", kPrivate, "<sys/mman.h>", kPublic },
+  { "<bits/mman-shared.h>", kPrivate, "<sys/mman.h>", kPublic },
   { "<bits/monetary-ldbl.h>", kPrivate, "<monetary.h>", kPublic },
   { "<bits/mqueue.h>", kPrivate, "<mqueue.h>", kPublic },
   { "<bits/mqueue2.h>", kPrivate, "<mqueue.h>", kPublic },
@@ -450,8 +473,10 @@ const IncludeMapEntry libc_include_map[] = {
   { "<bits/string2.h>", kPrivate, "<string.h>", kPublic },
   { "<bits/string3.h>", kPrivate, "<string.h>", kPublic },
   { "<bits/stropts.h>", kPrivate, "<stropts.h>", kPublic },
+  { "<bits/struct_stat.h>", kPrivate, "<sys/stat.h>", kPublic },
+  { "<bits/struct_stat.h>", kPrivate, "<ftw.h>", kPublic },
   { "<bits/sys_errlist.h>", kPrivate, "<stdio.h>", kPublic },
-  { "<bits/syscall.h>", kPrivate, "<sys/syscall.h>", kPrivate },
+  { "<bits/syscall.h>", kPrivate, "<sys/syscall.h>", kPublic },
   { "<bits/sysctl.h>", kPrivate, "<sys/sysctl.h>", kPublic },
   { "<bits/syslog-ldbl.h>", kPrivate, "<sys/syslog.h>", kPrivate },
   { "<bits/syslog-path.h>", kPrivate, "<sys/syslog.h>", kPrivate },
@@ -465,6 +490,8 @@ const IncludeMapEntry libc_include_map[] = {
   { "<bits/timerfd.h>", kPrivate, "<sys/timerfd.h>", kPublic },
   { "<bits/timex.h>", kPrivate, "<sys/timex.h>", kPublic },
   { "<bits/types.h>", kPrivate, "<sys/types.h>", kPublic },
+  { "<bits/types/siginfo_t.h>", kPrivate, "<signal.h>", kPublic },
+  { "<bits/types/siginfo_t.h>", kPrivate, "<sys/wait.h>", kPublic },
   { "<bits/uio.h>", kPrivate, "<sys/uio.h>", kPublic },
   { "<bits/unistd.h>", kPrivate, "<unistd.h>", kPublic },
   { "<bits/ustat.h>", kPrivate, "<sys/ustat.h>", kPrivate },
@@ -529,7 +556,6 @@ const IncludeMapEntry libc_include_map[] = {
   { "<bits/string.h>", kPrivate, "<string.h>", kPublic },
   { "<bits/string2.h>", kPrivate, "<string.h>", kPublic },
   { "<bits/string3.h>", kPrivate, "<string.h>", kPublic },
-  { "<bits/syscall.h>", kPrivate, "<sys/syscall.h>", kPrivate },
   { "<bits/timerfd.h>", kPrivate, "<sys/timerfd.h>", kPublic },
   { "<bits/typesizes.h>", kPrivate, "<sys/types.h>", kPublic },
   // Top-level #includes that just forward to another file:
@@ -540,7 +566,6 @@ const IncludeMapEntry libc_include_map[] = {
   // to decide which of the two files is canonical.  If neither is
   // on the POSIX.1 1998 list, I just choose the top-level one.
   { "<sys/poll.h>", kPrivate, "<poll.h>", kPublic },
-  { "<sys/syscall.h>", kPrivate, "<syscall.h>", kPublic },
   { "<sys/syslog.h>", kPrivate, "<syslog.h>", kPublic },
   { "<sys/ustat.h>", kPrivate, "<ustat.h>", kPublic },
   { "<wait.h>", kPrivate, "<sys/wait.h>", kPublic },
@@ -562,7 +587,7 @@ const IncludeMapEntry libc_include_map[] = {
   { "<asm/errno.h>", kPrivate, "<errno.h>", kPublic },
   { "<asm/errno-base.h>", kPrivate, "<errno.h>", kPublic },
   { "<asm/ptrace-abi.h>", kPrivate, "<asm/ptrace.h>", kPublic },
-  { "<asm/unistd.h>", kPrivate, "<syscall.h>", kPublic },
+  { "<asm/unistd.h>", kPrivate, "<sys/syscall.h>", kPublic },
   { "<linux/limits.h>", kPrivate, "<limits.h>", kPublic },   // PATH_MAX
   { "<linux/prctl.h>", kPrivate, "<sys/prctl.h>", kPublic },
   { "<sys/ucontext.h>", kPrivate, "<ucontext.h>", kPublic },
@@ -828,6 +853,7 @@ const IncludeMapEntry libstdcpp_include_map[] = {
   { "<bits/unique_ptr.h>", kPrivate, "<memory>", kPublic },
   { "<bits/unordered_map.h>", kPrivate, "<unordered_map>", kPublic },
   { "<bits/unordered_set.h>", kPrivate, "<unordered_set>", kPublic },
+  { "<bits/utility.h>", kPrivate, "<utility>", kPublic },
   { "<bits/valarray_after.h>", kPrivate, "<valarray>", kPublic },
   { "<bits/valarray_array.h>", kPrivate, "<valarray>", kPublic },
   { "<bits/valarray_array.tcc>", kPrivate, "<valarray>", kPublic },
@@ -1072,20 +1098,20 @@ void MakeNodeTransitive(IncludePicker::IncludeMap* filename_map,
                         const string& key) {
   // If we've already calculated this node's transitive closure, we're done.
   const TransitiveStatus status = (*seen_nodes)[key];
-  if (status == kCalculating) {   // means there's a cycle in the mapping
-    // TODO: Reconsider cycle handling; the include_cycle test fails without
-    // this special-casing, but it seems we should handle this more generally.
-    if (key.find("internal/") != string::npos) {
-      VERRS(4) << "Ignoring a cyclical mapping involving " << key << "\n";
-      return;
-    }
-  }
-  if (status == kCalculating) {
-    VERRS(0) << "Cycle in include-mapping:\n";
+  if (status == kCalculating) {  // means there's a cycle in the mapping
+    // Note that cycles in mappings are generally benign, the cycle detection
+    // here is only necessary to protect the recursive algorithm from infinite
+    // regress. We will still expand all reachable nodes in the graph to a
+    // plain sequence representing the transitive closure.
+    // The expanded mappings are only used for simple lookup, never followed
+    // recursively (which could have necessitated preserving cycles and handling
+    // them in that traversal too).
+    // Log cycles at a high verbosity level to aid debugging.
+    VERRS(8) << "Ignored cycle in include mappings: ";
     for (const string& node : *node_stack)
-      VERRS(0) << "  " << node << " ->\n";
-    VERRS(0) << "  " << key << "\n";
-    CHECK_UNREACHABLE_("Cycle in include-mapping");  // cycle is a fatal error
+      VERRS(8) << node << " -> ";
+    VERRS(8) << key << "\n";
+    return;
   }
   if (status == kDone)
     return;
@@ -1211,26 +1237,43 @@ bool MappedInclude::HasAbsoluteQuotedInclude() const {
   return IsAbsolutePath(path);
 }
 
-IncludePicker::IncludePicker(bool no_default_mappings)
-    : has_called_finalize_added_include_lines_(false) {
-  if (!no_default_mappings) {
-    AddDefaultMappings();
-  }
+IncludePicker::IncludePicker(RegexDialect regex_dialect,
+                             CStdLib cstdlib,
+                             CXXStdLib cxxstdlib)
+    : has_called_finalize_added_include_lines_(false),
+      regex_dialect(regex_dialect) {
+  AddDefaultMappings(cstdlib, cxxstdlib);
 }
 
-void IncludePicker::AddDefaultMappings() {
-  AddSymbolMappings(libc_symbol_map, IWYU_ARRAYSIZE(libc_symbol_map));
-  AddSymbolMappings(libstdcpp_symbol_map, IWYU_ARRAYSIZE(libstdcpp_symbol_map));
+void IncludePicker::AddDefaultMappings(CStdLib cstdlib,
+                                       CXXStdLib cxxstdlib) {
+  if (cstdlib == CStdLib::Glibc) {
+    AddSymbolMappings(libc_symbol_map, IWYU_ARRAYSIZE(libc_symbol_map));
+    AddIncludeMappings(libc_include_map, IWYU_ARRAYSIZE(libc_include_map));
+  }
 
-  AddIncludeMappings(libc_include_map,
-      IWYU_ARRAYSIZE(libc_include_map));
-  AddIncludeMappings(stdlib_c_include_map,
-      IWYU_ARRAYSIZE(stdlib_c_include_map));
-  AddIncludeMappings(libstdcpp_include_map,
-      IWYU_ARRAYSIZE(libstdcpp_include_map));
+  if (cxxstdlib == CXXStdLib::Libstdcxx) {
+    AddSymbolMappings(libstdcpp_symbol_map,
+                      IWYU_ARRAYSIZE(libstdcpp_symbol_map));
+    AddIncludeMappings(libstdcpp_include_map,
+                       IWYU_ARRAYSIZE(libstdcpp_include_map));
+  }
 
-  AddPublicIncludes(stdlib_cpp_public_headers,
-      IWYU_ARRAYSIZE(stdlib_cpp_public_headers));
+  if (cxxstdlib != CXXStdLib::None) {
+    // Map C headers to associated C++ headers. The standard library
+    // mappings shouldn't be mentioning the C headers.
+    AddIncludeMappings(stdlib_c_include_map,
+                       IWYU_ARRAYSIZE(stdlib_c_include_map));
+
+    // Add common C++ mappings to deal with generic C++ standard
+    // library symbol issues (so the standard library doesn't have to
+    // do this too). If it does that's ok.
+    AddSymbolMappings(stdlib_cxx_symbol_map,
+                      IWYU_ARRAYSIZE(stdlib_cxx_symbol_map));
+
+    AddPublicIncludes(stdlib_cpp_public_headers,
+                      IWYU_ARRAYSIZE(stdlib_cpp_public_headers));
+  }
 }
 
 void IncludePicker::MarkVisibility(VisibilityMap* map,
@@ -1284,6 +1327,7 @@ void IncludePicker::AddDirectInclude(const string& includer_filepath,
     // the closing quote as part of the .*.
     AddFriendRegex(includee_filepath,
                    quoted_includee.substr(0, internal_pos) + ".*");
+    VERRS(8) << "Adding dynamic mapping for internal/ header\n";
     AddMapping(quoted_includee, mapped_includer);
   }
 
@@ -1293,6 +1337,7 @@ void IncludePicker::AddDirectInclude(const string& includer_filepath,
     string public_header = quoted_includee;
     StripPast(&public_header, "/");   // read past "asm-whatever/"
     public_header = "<asm/" + public_header;   // now it's <asm/something.h>
+    VERRS(8) << "Adding dynamic mapping for <asm-*> header\n";
     AddMapping(quoted_includee, MappedInclude(public_header));
   }
 }
@@ -1414,19 +1459,20 @@ void IncludePicker::ExpandRegexes() {
   for (const auto& incmap : quoted_includes_to_quoted_includers_) {
     const string& hdr = incmap.first;
     for (const string& regex_key : filepath_include_map_regex_keys) {
+      const string regex = regex_key.substr(1);
       const vector<MappedInclude>& map_to = filepath_include_map_[regex_key];
-      // Enclose the regex in ^(...)$ for full match.
-      std::regex regex(std::string("^(" + regex_key.substr(1) + ")$"));
-      if (std::regex_match(hdr, regex) &&
+      if (RegexMatch(regex_dialect, hdr, regex) &&
           !ContainsQuotedInclude(map_to, hdr)) {
-        Extend(&filepath_include_map_[hdr], filepath_include_map_[regex_key]);
+        for (const MappedInclude& target : map_to) {
+          filepath_include_map_[hdr].push_back(MappedInclude(
+              RegexReplace(regex_dialect, hdr, regex, target.quoted_include)));
+        }
         MarkVisibility(&include_visibility_map_, hdr,
                        include_visibility_map_[regex_key]);
       }
     }
     for (const string& regex_key : friend_to_headers_map_regex_keys) {
-      std::regex regex(std::string("^(" + regex_key.substr(1) + ")$"));
-      if (std::regex_match(hdr, regex)) {
+      if (RegexMatch(regex_dialect, hdr, regex_key.substr(1))) {
         InsertAllInto(friend_to_headers_map_[regex_key],
                       &friend_to_headers_map_[hdr]);
       }

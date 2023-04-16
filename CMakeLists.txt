@@ -23,11 +23,13 @@ if (iwyu_standalone_build)
   include(AddLLVM)
   include(HandleLLVMOptions)
 
+  set(iwyu_llvm_dir ${LLVM_DIR})
   set(iwyu_include_dirs
     ${LLVM_INCLUDE_DIRS}
     ${CLANG_INCLUDE_DIRS}
   )
 else()
+  set(iwyu_llvm_dir ${CMAKE_SOURCE_DIR})
   set(iwyu_include_dirs
     ${LLVM_SOURCE_DIR}/include
     ${LLVM_EXTERNAL_CLANG_SOURCE_DIR}/include
@@ -36,7 +38,8 @@ else()
   )
 endif()
 
-message(STATUS "IWYU: configuring for LLVM ${LLVM_VERSION}...")
+message(STATUS
+  "IWYU: configuring for LLVM ${LLVM_VERSION} from ${iwyu_llvm_dir}")
 
 # The good default is given by the llvm toolchain installation itself, but still
 # in case both static and shared libraries are available, allow to override that
@@ -50,13 +53,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # Synthesize clang-resource-headers target if necessary.
 if (NOT TARGET clang-resource-headers)
-  # Use only major.minor.patch for the resource directory structure; some
+  # Use only LLVM_VERSION_MAJOR for the resource directory structure; some
   # platforms include suffix in LLVM_VERSION.
-  set(llvm_ver
-    "${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}.${LLVM_VERSION_PATCH}"
-  )
-  set(clang_headers_src "${LLVM_LIBRARY_DIR}/clang/${llvm_ver}/include")
-  set(clang_headers_dst "${CMAKE_BINARY_DIR}/lib/clang/${llvm_ver}/include")
+  set(clang_headers_src "${LLVM_LIBRARY_DIR}/clang/${LLVM_VERSION_MAJOR}/include")
+  set(clang_headers_dst "${CMAKE_BINARY_DIR}/lib/clang/${LLVM_VERSION_MAJOR}/include")
 
   file(GLOB_RECURSE in_files RELATIVE "${clang_headers_src}"
     "${clang_headers_src}/*"
@@ -70,7 +70,7 @@ if (NOT TARGET clang-resource-headers)
     add_custom_command(OUTPUT "${dst}"
       DEPENDS "${src}"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${src}" "${dst}"
-      COMMENT "Copying clang's ${file}..."
+      COMMENT "Copying ${src}..."
     )
     list(APPEND out_files "${dst}")
   endforeach()
@@ -111,6 +111,7 @@ add_llvm_executable(include-what-you-use
   iwyu_output.cc
   iwyu_path_util.cc
   iwyu_preprocessor.cc
+  iwyu_regex.cc
   iwyu_verrs.cc
 )
 
@@ -118,10 +119,10 @@ add_llvm_executable(include-what-you-use
 # available when IWYU is executed from the build dir.
 add_dependencies(include-what-you-use clang-resource-headers)
 
-# LLVM requires C++14, so follow suit.
+# LLVM requires C++17, so follow suit.
 set_target_properties(include-what-you-use PROPERTIES
   CXX_STANDARD_REQUIRED ON
-  CXX_STANDARD 14
+  CXX_STANDARD 17
   CXX_EXTENSIONS OFF
 )
 

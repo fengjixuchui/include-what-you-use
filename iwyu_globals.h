@@ -28,6 +28,7 @@ using std::set;
 using std::string;
 using std::vector;
 
+enum class RegexDialect;
 class FullUseCache;
 class IncludePicker;
 class SourceManagerCharacterDataGetter;
@@ -42,8 +43,12 @@ class OptionsParser {
   OptionsParser(int argc, char** argv);
   ~OptionsParser();
 
-  int clang_argc() const { return clang_argc_; }
-  const char** clang_argv() const { return clang_argv_; }
+  int clang_argc() const {
+    return clang_argc_;
+  }
+  const char** clang_argv() const {
+    return clang_argv_;
+  }
 
  private:
   int clang_argc_;
@@ -76,6 +81,7 @@ struct CommandlineFlags {
   enum PrefixHeaderIncludePolicy { kAdd, kKeep, kRemove };
   CommandlineFlags();                     // sets flags to default values
   int ParseArgv(int argc, char** argv);   // parses flags from argv
+  bool HasDebugFlag(const char* flag) const;
 
   set<string> check_also;  // -c: globs to report iwyu violations for
   set<string> keep;        // -k: globs to force-keep includes for
@@ -90,11 +96,14 @@ struct CommandlineFlags {
   bool pch_in_code;   // Treat the first seen include as a PCH. No short option.
   bool no_comments;   // Disable 'why' comments. No short option.
   bool update_comments; // Force 'why' comments. No short option.
+  bool comments_with_namespace; // Show namespace in 'why' comments.
   bool no_fwd_decls;  // Disable forward declarations.
   bool quoted_includes_first; // Place quoted includes first in sort order.
   bool cxx17ns; // -C: C++17 nested namespace syntax
   int exit_code_error;   // Exit with this code for iwyu violations.
   int exit_code_always;  // Always exit with this exit code.
+  set<string> dbg_flags; // Debug flags.
+  RegexDialect regex_dialect;  // Dialect for regular expression processing.
 };
 
 const CommandlineFlags& GlobalFlags();

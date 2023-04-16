@@ -29,6 +29,9 @@ typedef IndirectStructForwardDeclaredInD1 DoesNotForwardDeclareProperly;
 struct DirectStruct1;
 typedef DirectStruct1 Includes;
 
+// Essentially the same; should require corresponding header inclusion here.
+typedef struct DirectStruct3 IncludesElaborated;
+
 // Requires the full type because it does not obey rules (1) *or* (2)
 typedef DirectStruct2 DoesNotForwardDeclareAndIncludes;
 
@@ -57,6 +60,14 @@ typedef TplIndirectStruct2<int> TplDoesEverythingRight;
 template <> struct TplIndirectStruct2<float>;
 typedef TplIndirectStruct2<float> TplDoesEverythingRightAgain;
 
+// --- Special typedefs, for nested name testing
+
+struct IndirectStruct3;
+typedef IndirectStruct3 IndirectStruct3NonProvidingTypedef;
+
+struct IndirectStruct4;
+typedef IndirectStruct4 IndirectStruct4NonProvidingTypedef;
+
 
 /**** IWYU_SUMMARY
 
@@ -68,9 +79,11 @@ tests/cxx/iwyu_stricter_than_cpp-typedefs.h should remove these lines:
 - template <typename T> struct TplDirectStruct1;  // lines XX-XX
 
 The full include-list for tests/cxx/iwyu_stricter_than_cpp-typedefs.h:
-#include "tests/cxx/iwyu_stricter_than_cpp-d1.h"  // for DirectStruct1, DirectStruct2, TplDirectStruct1, TplDirectStruct2
+#include "tests/cxx/iwyu_stricter_than_cpp-d1.h"  // for DirectStruct1, DirectStruct2, DirectStruct3, TplDirectStruct1, TplDirectStruct2
 #include "tests/cxx/iwyu_stricter_than_cpp-i1.h"  // for IndirectStruct1, IndirectStructForwardDeclaredInD1, TplIndirectStruct1, TplIndirectStructForwardDeclaredInD1
 struct IndirectStruct2;  // lines XX-XX
+struct IndirectStruct3;  // lines XX-XX
+struct IndirectStruct4;  // lines XX-XX
 template <typename T> struct TplIndirectStruct2;  // lines XX-XX
 
 ***** IWYU_SUMMARY */

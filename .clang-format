@@ -4,5 +4,7 @@ AllowShortIfStatementsOnASingleLine: false
 AllowShortFunctionsOnASingleLine: false
 AllowShortCaseLabelsOnASingleLine: false
 AllowShortLoopsOnASingleLine: false
+CommentPragmas: '^ IWYU:'
+DerivePointerAlignment: false
 SortIncludes: false
 SortUsingDeclarations: false

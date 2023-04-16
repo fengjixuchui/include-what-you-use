@@ -13,7 +13,7 @@ defaults:
 
 jobs:
   build:
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
 
@@ -24,25 +24,34 @@ jobs:
       - name: Install prerequisites
         run: |
           wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-          sudo add-apt-repository "deb http://apt.llvm.org/bionic/ llvm-toolchain-bionic$LLVM_TAG main"
+          sudo add-apt-repository "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy$LLVM_TAG main"
           sudo apt update
-          sudo apt install -y ninja-build
           # Remove any base dist LLVM/Clang installations
-          sudo apt remove -y "libclang-dev*"
-          sudo apt remove -y "clang*"
-          sudo apt remove -y "llvm*"
+          sudo apt remove -y \
+               "libclang*" \
+               "clang*" \
+               "llvm*"
           # Reinstall tagged versions
-          sudo apt install -y llvm$LLVM_TAG-dev
-          sudo apt install -y libclang$LLVM_TAG-dev
-          sudo apt install -y clang$LLVM_TAG
+          sudo apt install -y \
+               ninja-build \
+               llvm$LLVM_TAG-dev \
+               libclang$LLVM_TAG-dev \
+               clang$LLVM_TAG
 
-      - name: Work around broken packaging
+      - name: Select checkout ref (PR)
+        if: github.event_name == 'pull_request'
         run: |
-          sudo touch /usr/lib/llvm-15/bin/tblgen-lsp-server
-          sudo touch /usr/lib/llvm-15/lib/libMLIRSupportIndentedOstream.a
+          echo "IWYU_CHECKOUT_REF=${{github.event.pull_request.head.sha}}" >> $GITHUB_ENV
 
-      - name: Check out default branch
-        uses: actions/checkout@v2
+      - name: Select checkout ref (push/schedule)
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        run: |
+          echo "IWYU_CHECKOUT_REF=${{github.sha}}" >> $GITHUB_ENV
+
+      - name: Check out branch
+        uses: actions/checkout@v3
+        with:
+          ref: ${{env.IWYU_CHECKOUT_REF}}
 
       - name: Build include-what-you-use
         run: |

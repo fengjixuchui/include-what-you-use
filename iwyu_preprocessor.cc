@@ -27,9 +27,8 @@
 #include "iwyu_stl_util.h"
 #include "iwyu_string_util.h"
 #include "iwyu_verrs.h"
-// TODO(wan): remove this once the IWYU bug is fixed.
-// IWYU pragma: no_include "foo/bar/baz.h"
 #include "llvm/Support/raw_ostream.h"
+#include "clang/AST/Decl.h"
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Lex/MacroInfo.h"
 
@@ -39,12 +38,12 @@ using clang::FileID;
 using clang::MacroDefinition;
 using clang::MacroDirective;
 using clang::MacroInfo;
+using clang::NamedDecl;
 using clang::Preprocessor;
 using clang::SourceLocation;
 using clang::SourceRange;
 using clang::Token;
 using llvm::errs;
-using llvm::Optional;
 using llvm::StringRef;
 using std::make_pair;
 using std::string;
@@ -128,7 +127,7 @@ bool MatchOneToken(const vector<string>& tokens,
   if (tokens.size() > num_expected_tokens &&
       !StartsWith(tokens[num_expected_tokens], "//") &&
       !StartsWith(tokens[num_expected_tokens], "*/")) {
-    Warn(loc, "Extra tokens on pragma line");
+    VERRS(4) << PrintableLoc(loc) << ": warning: Extra tokens on pragma line\n";
   }
   return true;
 }
@@ -159,7 +158,7 @@ bool MatchTwoTokens(const vector<string>& tokens,
       !StartsWith(tokens[num_expected_tokens], "//") &&
       !StartsWith(tokens[num_expected_tokens], "*/")) {
     // Accept but warn.
-    Warn(loc, "Extra tokens on pragma line");
+    VERRS(4) << PrintableLoc(loc) << ": warning: Extra tokens on pragma line\n";
   }
   return true;
 }
@@ -175,6 +174,14 @@ bool MatchTwoTokens(const vector<string>& tokens,
 bool IwyuPreprocessorInfo::HasOpenBeginExports(const FileEntry* file) const {
   return !begin_exports_location_stack_.empty() &&
       GetFileEntry(begin_exports_location_stack_.top()) == file;
+}
+
+// Only call this when the given files is the one being processed
+// Only return true if there is an open begin_keep pragma in the current
+// state of the parse of the given file.
+bool IwyuPreprocessorInfo::HasOpenBeginKeep(const FileEntry* file) const {
+  return !begin_keep_location_stack_.empty() &&
+      GetFileEntry(begin_keep_location_stack_.top()) == file;
 }
 
 bool IwyuPreprocessorInfo::HandleComment(Preprocessor& pp,
@@ -201,10 +208,28 @@ void IwyuPreprocessorInfo::HandlePragmaComment(SourceRange comment_range) {
   if (HasOpenBeginExports(this_file_entry)) {
     if (MatchOneToken(tokens, "end_exports", 1, begin_loc)) {
       ERRSYM(this_file_entry) << "end_exports pragma seen\n";
+      SourceLocation export_loc_begin = begin_exports_location_stack_.top();
       begin_exports_location_stack_.pop();
+      SourceRange export_range(export_loc_begin, begin_loc);
+      export_location_ranges_.insert(
+          std::make_pair(this_file_entry, export_range));
     } else {
       // No pragma allowed within "begin_exports" - "end_exports"
       Warn(begin_loc, "Expected end_exports pragma");
+    }
+    return;
+  }
+
+  if (HasOpenBeginKeep(this_file_entry)) {
+    if (MatchOneToken(tokens, "end_keep", 1, begin_loc)) {
+      ERRSYM(this_file_entry) << "end_keep pragma seen\n";
+      SourceLocation keep_loc_begin = begin_keep_location_stack_.top();
+      begin_keep_location_stack_.pop();
+      SourceRange keep_range(keep_loc_begin, begin_loc);
+      keep_location_ranges_.insert(std::make_pair(this_file_entry, keep_range));
+    } else {
+      // No pragmas allowed within "begin_keep" - "end_keep"
+      Warn(begin_loc, "Expected end_keep pragma");
     }
     return;
   }
@@ -220,6 +245,17 @@ void IwyuPreprocessorInfo::HandlePragmaComment(SourceRange comment_range) {
     return;
   }
 
+  if (MatchOneToken(tokens, "begin_keep", 1, begin_loc)) {
+    ERRSYM(this_file_entry) << "begin_keep pragma seen\n";
+    begin_keep_location_stack_.push(begin_loc);
+    return;
+  }
+
+  if (MatchOneToken(tokens, "end_keep", 1, begin_loc)) {
+    Warn(begin_loc, "end_keep without a begin_keep");
+    return;
+  }
+
   if (MatchTwoTokens(tokens, "private,", "include", 3, begin_loc)) {
     // 3rd token should be a quoted header.
     const string& suggested = tokens[2];
@@ -228,14 +264,13 @@ void IwyuPreprocessorInfo::HandlePragmaComment(SourceRange comment_range) {
       return;
     }
 
-    const string quoted_this_file
-        = ConvertToQuotedInclude(GetFilePath(begin_loc));
+    const string quoted_this_file =
+        ConvertToQuotedInclude(GetFilePath(begin_loc));
+
+    VERRS(8) << "Adding dynamic mapping for private pragma\n";
     MutableGlobalIncludePicker()->AddMapping(quoted_this_file,
                                              MappedInclude(suggested));
     MutableGlobalIncludePicker()->MarkIncludeAsPrivate(quoted_this_file);
-    ERRSYM(this_file_entry) << "Adding private pragma-mapping: "
-                            << quoted_this_file << " -> "
-                            << suggested << "\n";
     return;
   }
 
@@ -344,13 +379,12 @@ void IwyuPreprocessorInfo::ProcessHeadernameDirectivesInFile(
     for (string& public_include : public_includes) {
       StripWhiteSpace(&public_include);
       const string quoted_header_name = "<" + public_include + ">";
+
+      VERRS(8) << "Adding dynamic mapping for @headername\n";
       MutableGlobalIncludePicker()->AddMapping(
           quoted_private_include, MappedInclude(quoted_header_name));
       MutableGlobalIncludePicker()->MarkIncludeAsPrivate(
           quoted_private_include);
-      ERRSYM(GetFileEntry(current_loc)) << "Adding @headername mapping: "
-                                        << quoted_private_include << "->"
-                                        << quoted_header_name << "\n";
     }
     break;  // No more than one @headername directive allowed.
   }
@@ -397,7 +431,8 @@ void IwyuPreprocessorInfo::MaybeProtectInclude(
   // interpreted as a pragma. Maybe do "keep" and "export" pragma handling
   // in HandleComment?
   if (LineHasText(includer_loc, "// IWYU pragma: keep") ||
-      LineHasText(includer_loc, "/* IWYU pragma: keep")) {
+      LineHasText(includer_loc, "/* IWYU pragma: keep") ||
+      HasOpenBeginKeep(includer)) {
     protect_reason = "pragma_keep";
     FileInfoFor(includer)->ReportKnownDesiredFile(includee);
 
@@ -413,19 +448,19 @@ void IwyuPreprocessorInfo::MaybeProtectInclude(
     const string includer_path = GetFilePath(includer);
     const string quoted_includer = ConvertToQuotedInclude(includer_path);
     MappedInclude map_to(quoted_includer, includer_path);
+    VERRS(8) << "Adding dynamic mapping for export pragma: "
+             << "(" << GetFilePath(includee) << ") -> (" << includer_path
+             << ")\n";
     MutableGlobalIncludePicker()->AddMapping(include_name_as_written, map_to);
-    ERRSYM(includer) << "Adding pragma-export mapping: "
-                     << include_name_as_written << " -> "
-                     << map_to.quoted_include << "\n";
     // Relative includes can be problematic as map keys, because they are
     // context-dependent.  Convert it to a context-free quoted include
     // (which may contain the full path to the file), and add that too.
     string map_from = ConvertToQuotedInclude(GetFilePath(includee));
     if (map_from != include_name_as_written) {
+      VERRS(8) << "Adding dynamic mapping for export pragma (relative): "
+               << "(" << GetFilePath(includee) << ") -> (" << includer_path
+               << ")\n";
       MutableGlobalIncludePicker()->AddMapping(map_from, map_to);
-      ERRSYM(includer) << "Adding pragma-export mapping: "
-                       << map_from << " -> " << map_to.quoted_include
-                       << "\n";
     }
 
   // We also always keep #includes of .c files: iwyu doesn't touch those.
@@ -669,7 +704,7 @@ void IwyuPreprocessorInfo::InclusionDirective(
     StringRef filename,
     bool is_angled,
     clang::CharSourceRange filename_range,
-    Optional<FileEntryRef> file,
+    clang::OptionalFileEntryRef file,
     StringRef search_path,
     StringRef relative_path,
     const clang::Module* imported,
@@ -790,6 +825,12 @@ void IwyuPreprocessorInfo::FileChanged_ExitToFile(
          "begin_exports without an end_exports");
     begin_exports_location_stack_.pop();
   }
+
+  if (HasOpenBeginKeep(exiting_from)) {
+    Warn(begin_keep_location_stack_.top(),
+         "begin_keep without an end_keep");
+    begin_keep_location_stack_.pop();
+  }
 }
 
 void IwyuPreprocessorInfo::FileChanged_RenameFile(SourceLocation new_file) {
@@ -837,8 +878,8 @@ void IwyuPreprocessorInfo::ReportMacroUse(const string& name,
 // As above, but get the definition location from macros_definition_loc_.
 void IwyuPreprocessorInfo::FindAndReportMacroUse(const string& name,
                                                  SourceLocation loc) {
-  if (const SourceLocation* dfn_loc
-      = FindInMap(&macros_definition_loc_, name)) {
+  if (const SourceLocation* dfn_loc =
+          FindInMap(&macros_definition_loc_, name)) {
     ReportMacroUse(name, loc, *dfn_loc);
   }
 }
@@ -849,8 +890,8 @@ void IwyuPreprocessorInfo::FindAndReportMacroUse(const string& name,
 // Adds of includer's includes, direct or indirect, into retval.
 void IwyuPreprocessorInfo::AddAllIncludesAsFileEntries(
     const FileEntry* includer, set<const FileEntry*>* retval) const {
-  set<const FileEntry*> direct_incs
-      = FileInfoOrEmptyFor(includer).direct_includes_as_fileentries();
+  set<const FileEntry*> direct_incs =
+      FileInfoOrEmptyFor(includer).direct_includes_as_fileentries();
   for (const FileEntry* include : direct_incs) {
     if (ContainsKey(*retval, include))  // avoid infinite recursion
       continue;
@@ -895,8 +936,8 @@ void IwyuPreprocessorInfo::PopulateIntendsToProvideMap() {
     if (picker.IsPublic(file)) {
       AddAllIncludesAsFileEntries(file, &intends_to_provide_map_[file]);
     } else {
-      const set<const FileEntry*>& direct_includes
-          = fileinfo.second.direct_includes_as_fileentries();
+      const set<const FileEntry*>& direct_includes =
+          fileinfo.second.direct_includes_as_fileentries();
       for (const FileEntry* inc : direct_includes) {
         intends_to_provide_map_[file].insert(inc);
         if (picker.IsPublic(inc))
@@ -910,8 +951,8 @@ void IwyuPreprocessorInfo::PopulateIntendsToProvideMap() {
     const FileEntry* file = fileinfo.first;
     // See if a round-trip to string and back ends up at a different file.
     const string quoted_include = ConvertToQuotedInclude(GetFilePath(file));
-    const FileEntry* other_file
-        = GetOrDefault(include_to_fileentry_map_, quoted_include, file);
+    const FileEntry* other_file =
+        GetOrDefault(include_to_fileentry_map_, quoted_include, file);
     if (other_file != file) {
       InsertAllInto(intends_to_provide_map_[file],
                     &intends_to_provide_map_[other_file]);
@@ -1033,8 +1074,8 @@ const IwyuFileInfo& IwyuPreprocessorInfo::FileInfoOrEmptyFor(
 
 bool IwyuPreprocessorInfo::PublicHeaderIntendsToProvide(
     const FileEntry* public_header, const FileEntry* other_file) const {
-  if (const set<const FileEntry*>* provides
-      = FindInMap(&intends_to_provide_map_, public_header)) {
+  if (const set<const FileEntry*>* provides =
+          FindInMap(&intends_to_provide_map_, public_header)) {
     return ContainsKey(*provides, other_file);
   }
   return false;
@@ -1042,8 +1083,8 @@ bool IwyuPreprocessorInfo::PublicHeaderIntendsToProvide(
 
 bool IwyuPreprocessorInfo::FileTransitivelyIncludes(
     const FileEntry* includer, const FileEntry* includee) const {
-  if (const set<const FileEntry*>* all_includes
-      = FindInMap(&transitive_include_map_, includer)) {
+  if (const set<const FileEntry*>* all_includes =
+          FindInMap(&transitive_include_map_, includer)) {
     return ContainsKey(*all_includes, includee);
   }
   return false;
@@ -1051,8 +1092,8 @@ bool IwyuPreprocessorInfo::FileTransitivelyIncludes(
 
 bool IwyuPreprocessorInfo::FileTransitivelyIncludes(
     const FileEntry* includer, const string& quoted_includee) const {
-  if (const set<const FileEntry*>* all_includes
-      = FindInMap(&transitive_include_map_, includer)) {
+  if (const set<const FileEntry*>* all_includes =
+          FindInMap(&transitive_include_map_, includer)) {
     for (const FileEntry* include : *all_includes) {
       if (ConvertToQuotedInclude(GetFilePath(include)) == quoted_includee)
         return true;
@@ -1087,4 +1128,39 @@ bool IwyuPreprocessorInfo::ForwardDeclareIsInhibited(
       ContainsKey(*inhibited_forward_declares, normalized_symbol_name);
 }
 
+bool IwyuPreprocessorInfo::ForwardDeclareIsMarkedKeep(
+    const NamedDecl* decl) const {
+  // Use end-location so that any trailing comments match only on the last line.
+  SourceLocation loc = decl->getEndLoc();
+
+  // Is the decl part of a begin_keep/end_keep block?
+  const FileEntry* file = GetFileEntry(loc);
+  auto keep_ranges = keep_location_ranges_.equal_range(file);
+  for (auto it = keep_ranges.first; it != keep_ranges.second; ++it) {
+    if (it->second.fullyContains(loc)) {
+      return true;
+    }
+  }
+  // Is the declaration itself marked with trailing comment?
+  return (LineHasText(loc, "// IWYU pragma: keep") ||
+          LineHasText(loc, "/* IWYU pragma: keep"));
+}
+
+bool IwyuPreprocessorInfo::ForwardDeclareIsExported(
+    const NamedDecl* decl) const {
+  // Use end-location so that any trailing comments match only on the last line.
+  SourceLocation loc = decl->getEndLoc();
+
+  // Is the decl part of a begin_exports/end_exports block?
+  const FileEntry* file = GetFileEntry(loc);
+  auto export_ranges = export_location_ranges_.equal_range(file);
+  for (auto it = export_ranges.first; it != export_ranges.second; ++it) {
+    if (it->second.fullyContains(loc)) {
+      return true;
+    }
+  }
+  // Is the declaration itself marked with trailing comment?
+  return (LineHasText(loc, "// IWYU pragma: export") ||
+          LineHasText(loc, "/* IWYU pragma: export"));
+}
 }  // namespace include_what_you_use

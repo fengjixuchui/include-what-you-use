@@ -30,6 +30,7 @@
 namespace clang {
 class FileEntry;
 class UsingDecl;
+class ElaboratedTypeLoc;
 }  // namespace clang
 
 namespace include_what_you_use {
@@ -63,19 +64,45 @@ class OneUse {
          const string& dfn_filepath,
          clang::SourceLocation use_loc);
 
-  const string& symbol_name() const { return symbol_name_; }
-  const string& short_symbol_name() const { return short_symbol_name_; }
-  const clang::NamedDecl* decl() const  { return decl_; }
-  const clang::FileEntry* decl_file() const { return decl_file_; }
-  const string& decl_filepath() const { return decl_filepath_; }
-  clang::SourceLocation use_loc() const { return use_loc_; }
-  clang::SourceLocation decl_loc() const { return decl_loc_; }
-  bool is_full_use() const { return use_kind_ == kFullUse; }
-  UseFlags flags() const { return use_flags_; }
-  const string& comment() const { return comment_; }
-  bool ignore_use() const { return ignore_use_; }
-  bool is_iwyu_violation() const { return is_iwyu_violation_; }
-  bool has_suggested_header() const { return !suggested_header_.empty(); }
+  const string& symbol_name() const {
+    return symbol_name_;
+  }
+  const string& short_symbol_name() const {
+    return short_symbol_name_;
+  }
+  const clang::NamedDecl* decl() const {
+    return decl_;
+  }
+  const clang::FileEntry* decl_file() const {
+    return decl_file_;
+  }
+  const string& decl_filepath() const {
+    return decl_filepath_;
+  }
+  clang::SourceLocation use_loc() const {
+    return use_loc_;
+  }
+  clang::SourceLocation decl_loc() const {
+    return decl_loc_;
+  }
+  bool is_full_use() const {
+    return use_kind_ == kFullUse;
+  }
+  UseFlags flags() const {
+    return use_flags_;
+  }
+  const string& comment() const {
+    return comment_;
+  }
+  bool ignore_use() const {
+    return ignore_use_;
+  }
+  bool is_iwyu_violation() const {
+    return is_iwyu_violation_;
+  }
+  bool has_suggested_header() const {
+    return !suggested_header_.empty();
+  }
 
   const string& suggested_header() const {
     CHECK_(has_suggested_header() && "Must assign suggested_header first");
@@ -118,15 +145,27 @@ class OneUse {
 class OneIncludeOrForwardDeclareLine {
  public:
   explicit OneIncludeOrForwardDeclareLine(const clang::NamedDecl* fwd_decl);
+  explicit OneIncludeOrForwardDeclareLine(clang::ElaboratedTypeLoc);
   OneIncludeOrForwardDeclareLine(const clang::FileEntry* included_file,
                                  const string& quoted_include, int linenum);
 
-  const string& line() const { return line_; }
+  const string& line() const {
+    return line_;
+  }
   bool IsIncludeLine() const;           // vs forward-declare line
   string LineNumberString() const;      // <startline>-<endline>
-  bool is_desired() const { return is_desired_; }
-  bool is_present() const { return is_present_; }
-  const map<string, int>& symbol_counts() const { return symbol_counts_; }
+  bool is_desired() const {
+    return is_desired_;
+  }
+  bool is_present() const {
+    return is_present_;
+  }
+  bool is_elaborated_type() const {
+    return is_elaborated_type_;
+  }
+  const map<string, int>& symbol_counts() const {
+    return symbol_counts_;
+  }
 
   string quoted_include() const {
     CHECK_(IsIncludeLine() && "Must call quoted_include() on include lines");
@@ -169,17 +208,18 @@ class OneIncludeOrForwardDeclareLine {
   }
 
  private:
-  string line_;                     // '#include XXX' or 'class YYY;'
-  int start_linenum_;
-  int end_linenum_;
-  bool is_desired_;                 // IWYU will recommend this line
-  bool is_present_;                 // line was present before the IWYU run
-  map<string, int> symbol_counts_;  // how many times we referenced each symbol
+  string line_;  // '#include XXX' or 'class YYY;'
+  int start_linenum_ = -1;
+  int end_linenum_ = -1;
+  bool is_desired_ = false;          // IWYU will recommend this line
+  bool is_present_ = false;          // line was present before the IWYU run
+  bool is_elaborated_type_ = false;  // Fwd-decl introduced by elaborated type
+  map<string, int> symbol_counts_;   // how many times we referenced each symbol
   // Only either two following members are set for includes
-  string quoted_include_;           // quoted file name we're including
-  const clang::FileEntry* included_file_;  // the file we're including
+  string quoted_include_;  // quoted file name we're including
+  const clang::FileEntry* included_file_ = nullptr;  // the file we're including
   // ...or this member is set for the fwd-decl we're emitting.
-  const clang::NamedDecl* fwd_decl_;
+  const clang::NamedDecl* fwd_decl_ = nullptr;
 };
 
 // This class holds IWYU information about a single file (FileEntry)
@@ -196,10 +236,14 @@ class IwyuFileInfo {
                const IwyuPreprocessorInfo* preprocessor_info,
                const string& quoted_include_name);
 
-  bool is_prefix_header() const { return is_prefix_header_; }
+  bool is_prefix_header() const {
+    return is_prefix_header_;
+  }
   void set_prefix_header() { is_prefix_header_ = true; }
 
-  bool is_pch_in_code() const { return is_pch_in_code_; }
+  bool is_pch_in_code() const {
+    return is_pch_in_code_;
+  }
   void set_pch_in_code() { is_pch_in_code_ = true; }
 
   // An 'associated' header is a header that this file #includes
@@ -220,6 +264,7 @@ class IwyuFileInfo {
   // the fwd-decl be removed, even if we don't see any uses of it.
   void AddForwardDeclare(const clang::NamedDecl* fwd_decl,
                          bool definitely_keep_fwd_decl);
+  void AddElaboratedType(clang::ElaboratedTypeLoc);
 
   void AddUsingDecl(const clang::UsingDecl* using_decl);
 
@@ -288,7 +333,9 @@ class IwyuFileInfo {
   size_t CalculateAndReportIwyuViolations();
 
  private:
-  const set<string>& direct_includes() const { return direct_includes_; }
+  const set<string>& direct_includes() const {
+    return direct_includes_;
+  }
 
   const set<string>& desired_includes() const {
     CHECK_(desired_includes_have_been_calculated_ &&
@@ -381,10 +428,18 @@ class FakeNamedDecl : public clang::NamedDecl {
   FakeNamedDecl(const string& kind_name, const string& qual_name,
                 const string& decl_filepath, int decl_linenum);
 
-  string kind_name() const { return kind_name_; }
-  string qual_name() const { return qual_name_; }
-  string decl_filepath() const { return decl_filepath_; }
-  int decl_linenum() const { return decl_linenum_; }
+  string kind_name() const {
+    return kind_name_;
+  }
+  string qual_name() const {
+    return qual_name_;
+  }
+  string decl_filepath() const {
+    return decl_filepath_;
+  }
+  int decl_linenum() const {
+    return decl_linenum_;
+  }
 
  private:
   string kind_name_;

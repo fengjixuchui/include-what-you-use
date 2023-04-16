@@ -32,7 +32,6 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
-#include "clang/AST/IgnoreExpr.h"
 #include "clang/AST/NestedNameSpecifier.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
@@ -50,14 +49,11 @@ class FileEntry;
 
 using clang::ASTDumper;
 using clang::BlockPointerType;
-using clang::CastExpr;
-using clang::CXXBindTemporaryExpr;
 using clang::CXXConstructExpr;
 using clang::CXXConstructorDecl;
 using clang::CXXDeleteExpr;
 using clang::CXXDependentScopeMemberExpr;
 using clang::CXXDestructorDecl;
-using clang::CXXMemberCallExpr;
 using clang::CXXMethodDecl;
 using clang::CXXNewExpr;
 using clang::CXXRecordDecl;
@@ -78,15 +74,12 @@ using clang::EnumDecl;
 using clang::Expr;
 using clang::ExprWithCleanups;
 using clang::FileEntry;
-using clang::FullExpr;
 using clang::FullSourceLoc;
 using clang::FunctionDecl;
 using clang::FunctionType;
 using clang::ImplicitCastExpr;
-using clang::IgnoreExprNodes;
 using clang::InjectedClassNameType;
 using clang::LValueReferenceType;
-using clang::MaterializeTemporaryExpr;
 using clang::MemberExpr;
 using clang::MemberPointerType;
 using clang::NamedDecl;
@@ -140,24 +133,24 @@ namespace {
 
 void DumpASTNode(llvm::raw_ostream& ostream, const ASTNode* node) {
   if (const Decl *decl = node->GetAs<Decl>()) {
-    ostream << "[" << decl->getDeclKindName() << "Decl] "
-            << PrintableDecl(decl);
+    ostream << "[" << GetKindName(decl) << "] " << PrintableDecl(decl);
   } else if (const Stmt *stmt = node->GetAs<Stmt>()) {
-    ostream << "[" << stmt->getStmtClassName() << "] " << PrintableStmt(stmt);
-  } else if (const Type *type = node->GetAs<Type>()) { // +typeloc
-    ostream << "[" << type->getTypeClassName()
-            << (node->IsA<TypeLoc>() ? "TypeLoc" : "Type") << "] "
-            << PrintableType(type);
-  } else if (const NestedNameSpecifier *nns =
+    ostream << "[" << GetKindName(stmt) << "] " << PrintableStmt(stmt);
+  } else if (const TypeLoc* typeloc = node->GetAs<TypeLoc>()) {
+    ostream << "[" << GetKindName(*typeloc) << "] "
+            << PrintableTypeLoc(*typeloc);
+  } else if (const Type* type = node->GetAs<Type>()) {  // +typeloc
+    ostream << "[" << GetKindName(type) << "] " << PrintableType(type);
+  } else if (const NestedNameSpecifier* nns =
                  node->GetAs<NestedNameSpecifier>()) {
     ostream << "[NestedNameSpecifier] " << PrintableNestedNameSpecifier(nns);
-  } else if (const TemplateName *tpl_name = node->GetAs<TemplateName>()) {
+  } else if (const TemplateName* tpl_name = node->GetAs<TemplateName>()) {
     ostream << "[TemplateName] " << PrintableTemplateName(*tpl_name);
-  } else if (const TemplateArgumentLoc *tpl_argloc =
+  } else if (const TemplateArgumentLoc* tpl_argloc =
                  node->GetAs<TemplateArgumentLoc>()) {
     ostream << "[TemplateArgumentLoc] "
             << PrintableTemplateArgumentLoc(*tpl_argloc);
-  } else if (const TemplateArgument *tpl_arg =
+  } else if (const TemplateArgument* tpl_arg =
                  node->GetAs<TemplateArgument>()) {
     ostream << "[TemplateArgument] " << PrintableTemplateArgument(*tpl_arg);
   } else {
@@ -170,6 +163,22 @@ TemplateSpecializationKind GetTemplateSpecializationKind(const Decl* decl) {
     return record->getTemplateSpecializationKind();
   }
   return clang::TSK_Undeclared;
+}
+
+// Desugars to a non-alias template specialization type, if present in the sugar
+// chain, or to canonical type.
+static const Type* DesugarAliasTypes(const Type* type) {
+  type = Desugar(type);
+
+  if (const auto* typedef_type = dyn_cast<TypedefType>(type)) {
+    const TypedefNameDecl* decl = typedef_type->getDecl();
+    return DesugarAliasTypes(decl->getUnderlyingType().getTypePtr());
+  }
+  if (const auto* tpl_spec_type = dyn_cast<TemplateSpecializationType>(type)) {
+    if (tpl_spec_type->isTypeAlias())
+      return DesugarAliasTypes(tpl_spec_type->getAliasedType().getTypePtr());
+  }
+  return type;
 }
 
 }  // anonymous namespace
@@ -233,7 +242,7 @@ bool ASTNode::FillLocationIfKnown(SourceLocation* loc) const {
 
 // --- Utilities for ASTNode.
 
-bool IsElaborationNode(const ASTNode* ast_node) {
+bool IsElaboratedTypeSpecifier(const ASTNode* ast_node) {
   if (ast_node == nullptr)
     return false;
   const ElaboratedType* elaborated_type = ast_node->GetAs<ElaboratedType>();
@@ -304,8 +313,8 @@ UseFlags ComputeUseFlags(const ASTNode* ast_node) {
   return flags;
 }
 
-bool IsNestedClassAsWritten(const ASTNode* ast_node) {
-  return (ast_node->IsA<RecordDecl>() &&
+bool IsNestedTagAsWritten(const ASTNode* ast_node) {
+  return (ast_node->IsA<TagDecl>() &&
           (ast_node->ParentIsA<CXXRecordDecl>() ||
            // For templated nested-classes, a ClassTemplateDecl is interposed.
            (ast_node->ParentIsA<ClassTemplateDecl>() &&
@@ -357,11 +366,10 @@ const NestedNameSpecifier* GetQualifier(const ASTNode* ast_node) {
   const NestedNameSpecifier* nns = nullptr;
   if (ast_node->IsA<TemplateName>()) {
     const TemplateName* tn = ast_node->GetAs<TemplateName>();
-    if (const DependentTemplateName* dtn
-        = tn->getAsDependentTemplateName())
+    if (const DependentTemplateName* dtn = tn->getAsDependentTemplateName())
       nns = dtn->getQualifier();
-    else if (const QualifiedTemplateName* qtn
-             = tn->getAsQualifiedTemplateName())
+    else if (const QualifiedTemplateName* qtn =
+                 tn->getAsQualifiedTemplateName())
       nns = qtn->getQualifier();
   }
   if (!nns) nns = TryGetQualifier<ElaboratedType>(ast_node);
@@ -378,42 +386,6 @@ const NestedNameSpecifier* GetQualifier(const ASTNode* ast_node) {
   if (!nns) nns = TryGetQualifier<DependentScopeDeclRefExpr>(ast_node);
   if (!nns) nns = TryGetQualifier<MemberExpr>(ast_node);
   return nns;
-}
-
-bool IsMemberOfATypedef(const ASTNode* ast_node) {
-  // TODO(csilvers): is this ever triggered in practice?
-  if (ast_node->ParentIsA<TypedefType>()) {      // my_typedef.a
-    return true;
-  }
-
-  // If we're one of those objects that exposes its qualifier
-  // (stuff before the ::), use that.
-  const NestedNameSpecifier* nns = GetQualifier(ast_node);
-
-  // If that doesn't work, see if our parent in the tree is an nns
-  // node.  We have to be a bit careful here: 1) If we're a typedef
-  // ourselves, the nns-parent is just us.  We have to go a level up
-  // to see our 'real' qualifier.  2) Often the parent will be an
-  // elaborated type, and we get to the qualifier that way.
-  if (!nns) {
-    nns = ast_node->GetParentAs<NestedNameSpecifier>();
-    if (nns && ast_node->IsA<TypedefType>()) {
-      nns = nns->getPrefix();
-    } else if (!nns) {
-      // nns will be non-nullptr when processing 'a' in MyTypedef::a::b
-      // But typically, such as processing 'a' in MyTypedef::a or 'b' in
-      // MyTypedef::a::b, the parent will be an ElaboratedType.
-      if (const ElaboratedType* elab_type =
-          ast_node->GetParentAs<ElaboratedType>())
-        nns = elab_type->getQualifier();
-    }
-  }
-
-  for (; nns; nns = nns->getPrefix()) {
-    if (nns->getAsType() && isa<TypedefType>(nns->getAsType()))
-      return true;
-  }
-  return false;
 }
 
 const DeclContext* GetDeclContext(const ASTNode* ast_node) {
@@ -464,7 +436,11 @@ string PrintableType(const Type* type) {
   if (!type)
     return "<null type>";
 
-  return QualType(type, 0).getAsString();
+  string typestr = QualType(type, 0).getAsString();
+  if (GlobalFlags().HasDebugFlag("printtypeclass")) {
+    typestr = GetKindName(type) + ":" + typestr;
+  }
+  return typestr;
 }
 
 string PrintableTypeLoc(const TypeLoc& typeloc) {
@@ -585,12 +561,36 @@ class TypeEnumerator : public RecursiveASTVisitor<TypeEnumerator> {
   }
 
   // --- Methods on RecursiveASTVisitor
-  bool VisitType(Type* type) {
-    seen_types_.insert(type);
-    return true;
+  bool TraverseType(QualType type) {
+    if (type.isNull())
+      return Base::TraverseType(type);
+    return TraverseTypeHelper(type);
+  }
+
+  bool TraverseTypeLoc(TypeLoc type_loc) {
+    if (!type_loc)
+      return Base::TraverseTypeLoc(type_loc);
+    return TraverseTypeHelper(type_loc.getType());
   }
 
  private:
+  bool TraverseTypeHelper(QualType qual_type) {
+    CHECK_(!qual_type.isNull());
+
+    const Type* desugared_until_alias_or_tpl = Desugar(qual_type.getTypePtr());
+    seen_types_.insert(desugared_until_alias_or_tpl);
+
+    const Type* desugared = DesugarAliasTypes(desugared_until_alias_or_tpl);
+
+    // Add desugared type components, if any. Don't add two types with the same
+    // canonical type.
+    // TODO(bolshakov): it doesn't always work properly. For example, both A and
+    // TypedefForA would be inserted in seen_types_ for Tpl<A, TypedefForA>,
+    // leading to indeterminate resugar_map construction.
+    // TODO(bolshakov): check whether typedef components are "provided".
+    return Base::TraverseType(QualType(desugared, 0));
+  }
+
   set<const Type*> seen_types_;
 };
 
@@ -642,15 +642,15 @@ bool HasCovariantReturnType(const CXXMethodDecl* method_decl) {
   return false;
 }
 
-const RecordDecl* GetDefinitionForClass(const Decl* decl) {
-  const RecordDecl* as_record = DynCastFrom(decl);
+const TagDecl* GetTagDefinition(const Decl* decl) {
+  const TagDecl* as_tag = DynCastFrom(decl);
   const ClassTemplateDecl* as_tpl = DynCastFrom(decl);
   if (as_tpl) {  // Convert the template to its underlying class defn.
-    as_record = DynCastFrom(as_tpl->getTemplatedDecl());
+    as_tag = DynCastFrom(as_tpl->getTemplatedDecl());
   }
-  if (as_record) {
-    if (const RecordDecl* record_dfn = as_record->getDefinition()) {
-      return record_dfn;
+  if (as_tag) {
+    if (const TagDecl* tag_dfn = as_tag->getDefinition()) {
+      return tag_dfn;
     }
     // If we're a templated class that was never instantiated (because
     // we were never "used"), then getDefinition() will return nullptr.
@@ -744,8 +744,8 @@ static map<const Type*, const Type*> GetTplTypeResugarMapForFunctionNoCallExpr(
   map<const Type*, const Type*> retval;
   if (!decl)   // can be nullptr if the function call is via a function pointer
     return retval;
-  if (const TemplateArgumentList* tpl_list
-      = decl->getTemplateSpecializationArgs()) {
+  if (const TemplateArgumentList* tpl_list =
+          decl->getTemplateSpecializationArgs()) {
     for (unsigned i = start_arg; i < tpl_list->size(); ++i) {
       if (const Type* arg_type = GetTemplateArgAsType(tpl_list->get(i))) {
         retval[GetCanonicalType(arg_type)] = arg_type;
@@ -841,8 +841,8 @@ map<const Type*, const Type*> GetTplTypeResugarMapForFunction(
     fn_args = call_expr->getArgs();
     num_args = call_expr->getNumArgs();
     const Expr* callee_expr = call_expr->getCallee()->IgnoreParenCasts();
-    const TemplateArgumentListInfo& explicit_tpl_args
-        = GetExplicitTplArgs(callee_expr);
+    const TemplateArgumentListInfo& explicit_tpl_args =
+        GetExplicitTplArgs(callee_expr);
     if (explicit_tpl_args.size() > 0) {
       retval = GetTplTypeResugarMapForFunctionExplicitTplArgs(
           decl, explicit_tpl_args);
@@ -850,8 +850,8 @@ map<const Type*, const Type*> GetTplTypeResugarMapForFunction(
     }
   } else {
     // If calling_expr has explicit template args, then consider them.
-    const TemplateArgumentListInfo& explicit_tpl_args
-        = GetExplicitTplArgs(calling_expr);
+    const TemplateArgumentListInfo& explicit_tpl_args =
+        GetExplicitTplArgs(calling_expr);
     if (explicit_tpl_args.size() > 0) {
       retval = GetTplTypeResugarMapForFunctionExplicitTplArgs(
           decl, explicit_tpl_args);
@@ -870,8 +870,8 @@ map<const Type*, const Type*> GetTplTypeResugarMapForFunction(
   //     operator<<(basic_ostream<char, T>& o, int i);
   // If I pass in an ostream as the first argument, then no part
   // of the (sugared) argument types match T, so we ignore it.
-  const map<const Type*, const Type*>& desugared_types
-      = GetTplTypeResugarMapForFunctionNoCallExpr(decl, start_of_implicit_args);
+  const map<const Type*, const Type*>& desugared_types =
+      GetTplTypeResugarMapForFunctionNoCallExpr(decl, start_of_implicit_args);
 
   // TODO(csilvers): SubstTemplateTypeParms are always desugared,
   //                 making this less useful than it should be.
@@ -947,7 +947,7 @@ const NamedDecl* GetDefinitionAsWritten(const NamedDecl* decl) {
       decl = tp_decl;
   }
   // Then, get to definition.
-  if (const NamedDecl* class_dfn = GetDefinitionForClass(decl)) {
+  if (const NamedDecl* class_dfn = GetTagDefinition(decl)) {
     return class_dfn;
   } else if (const FunctionDecl* fn_decl = DynCastFrom(decl)) {
     for (FunctionDecl::redecl_iterator it = fn_decl->redecls_begin();
@@ -986,14 +986,14 @@ bool IsInInlineNamespace(const Decl* decl) {
 }
 
 bool IsForwardDecl(const NamedDecl* decl) {
-  if (const auto* record_decl = dyn_cast<RecordDecl>(decl)) {
-
-    return (!record_decl->getName().empty() &&
-            !record_decl->isCompleteDefinition() &&
-            !record_decl->isEmbeddedInDeclarator() &&
-            !IsFriendDecl(record_decl) &&
-            !IsExplicitInstantiation(record_decl));
-  }
+  if (const auto* tag_decl = dyn_cast<TagDecl>(decl)) {
+    // clang-format off
+    return (!tag_decl->getName().empty() &&
+            !tag_decl->isCompleteDefinition() &&
+            !tag_decl->isEmbeddedInDeclarator() &&
+            !IsFriendDecl(tag_decl) &&
+            !IsExplicitInstantiation(tag_decl));
+  }  // clang-format on
 
   return false;
 }
@@ -1022,11 +1022,9 @@ template <class T> inline set<const clang::NamedDecl*> GetRedeclsOfRedeclarable(
 // The only way to find out whether a decl can be dyn_cast to a
 // Redeclarable<T> and what T is is to enumerate the possibilities.
 // Hence we hard-code the list.
-set<const clang::NamedDecl*> GetNonclassRedecls(const clang::NamedDecl* decl) {
-  CHECK_(!isa<RecordDecl>(decl) && "For classes, call GetClassRedecls()");
-  CHECK_(!isa<ClassTemplateDecl>(decl) && "For tpls, call GetClassRedecls()");
-  if (const TagDecl* specific_decl = DynCastFrom(decl))
-    return GetRedeclsOfRedeclarable(specific_decl);
+set<const clang::NamedDecl*> GetNonTagRedecls(const clang::NamedDecl* decl) {
+  CHECK_(!isa<TagDecl>(decl) && "For tag types, call GetTagRedecls()");
+  CHECK_(!isa<ClassTemplateDecl>(decl) && "For tpls, call GetTagRedecls()");
   // TODO(wan): go through iwyu to replace TypedefDecl with
   // TypedefNameDecl as needed.
   if (const TypedefNameDecl* specific_decl = DynCastFrom(decl))
@@ -1041,18 +1039,18 @@ set<const clang::NamedDecl*> GetNonclassRedecls(const clang::NamedDecl* decl) {
   return retval;
 }
 
-set<const NamedDecl*> GetClassRedecls(const NamedDecl* decl) {
-  const RecordDecl* record_decl = DynCastFrom(decl);
+set<const NamedDecl*> GetTagRedecls(const NamedDecl* decl) {
+  const TagDecl* tag_decl = DynCastFrom(decl);
   const ClassTemplateDecl* tpl_decl = DynCastFrom(decl);
   if (tpl_decl)
-    record_decl = tpl_decl->getTemplatedDecl();
-  if (!record_decl)
+    tag_decl = tpl_decl->getTemplatedDecl();
+  if (!tag_decl)
     return set<const NamedDecl*>();
 
   set<const NamedDecl*> redecls;
-  for (TagDecl::redecl_iterator it = record_decl->redecls_begin();
-       it != record_decl->redecls_end(); ++it) {
-    const RecordDecl* redecl = cast<RecordDecl>(*it);
+  for (TagDecl::redecl_iterator it = tag_decl->redecls_begin();
+       it != tag_decl->redecls_end(); ++it) {
+    const auto* redecl = cast<TagDecl>(*it);
     // If this decl is a friend decl, don't count it: friend decls
     // don't serve as forward-declarations.  (This should never
     // happen, I think, but it sometimes does due to a clang bug:
@@ -1076,7 +1074,7 @@ set<const NamedDecl*> GetClassRedecls(const NamedDecl* decl) {
 const NamedDecl* GetFirstRedecl(const NamedDecl* decl) {
   const NamedDecl* first_decl = decl;
   FullSourceLoc first_decl_loc(GetLocation(first_decl), *GlobalSourceManager());
-  set<const NamedDecl*> all_redecls = GetClassRedecls(decl);
+  set<const NamedDecl*> all_redecls = GetTagRedecls(decl);
   if (all_redecls.empty())  // input is not a class or class template
     return nullptr;
 
@@ -1099,7 +1097,7 @@ const NamedDecl* GetNonfriendClassRedecl(const NamedDecl* decl) {
   if (!record_decl || !IsFriendDecl(record_decl))
     return decl;
 
-  set<const NamedDecl*> all_redecls = GetClassRedecls(decl);
+  set<const NamedDecl*> all_redecls = GetTagRedecls(decl);
   CHECK_(!all_redecls.empty() && "Uncaught non-class decl");
   return *all_redecls.begin();    // arbitrary choice
 }
@@ -1147,36 +1145,57 @@ const Type* GetTypeOf(const TypeDecl* decl) {
 }
 
 const Type* GetCanonicalType(const Type* type) {
+  if (!type)
+    return type;
   QualType canonical_type = type->getCanonicalTypeUnqualified();
   return canonical_type.getTypePtr();
 }
 
-const Type* RemoveElaboration(const Type* type) {
-  if (const ElaboratedType* elaborated_type = DynCastFrom(type))
-    return elaborated_type->getNamedType().getTypePtr();
-  else
+// Based on Type::getUnqualifiedDesugaredType.
+const Type* Desugar(const Type* type) {
+  // Null types happen sometimes in IWYU.
+  if (!type) {
     return type;
+  }
+
+  const Type* cur = type;
+
+  while (true) {
+    // Don't desugar types that (potentially) add a name.
+    if (cur->getTypeClass() == Type::Typedef ||
+        cur->getTypeClass() == Type::TemplateSpecialization) {
+      return cur;
+    }
+
+    switch (cur->getTypeClass()) {
+#define ABSTRACT_TYPE(Class, Parent)
+#define TYPE(Class, Parent)                              \
+  case Type::Class: {                                    \
+    const auto* derived = cast<clang::Class##Type>(cur); \
+    if (!derived->isSugared()) {                         \
+      return cur;                                        \
+    }                                                    \
+    cur = derived->desugar().getTypePtr();               \
+    break;                                               \
+  }
+#include "clang/AST/TypeNodes.inc"
+    }
+  }
 }
 
 bool IsTemplatizedType(const Type* type) {
-  return (type && isa<TemplateSpecializationType>(RemoveElaboration(type)));
+  return (type && isa<TemplateSpecializationType>(Desugar(type)));
 }
 
 bool IsClassType(const clang::Type* type) {
-  return (type && (isa<TemplateSpecializationType>(RemoveElaboration(type)) ||
-                   isa<RecordType>(RemoveElaboration(type))));
-}
-
-const Type* RemoveSubstTemplateTypeParm(const Type* type) {
-  if (const SubstTemplateTypeParmType* subst_type = DynCastFrom(type))
-    return subst_type->getReplacementType().getTypePtr();
-  else
-    return type;
+  type = Desugar(type);
+  return (type &&
+          (isa<TemplateSpecializationType>(type) || isa<RecordType>(type)));
 }
 
 bool InvolvesTypeForWhich(const Type* type,
                           std::function<bool(const Type*)> pred) {
-  type = RemoveSubstTemplateTypeParm(type);
+  type = Desugar(type);
   if (pred(type))
     return true;
   const Decl* decl = TypeToDeclAsWritten(type);
@@ -1195,12 +1214,12 @@ bool InvolvesTypeForWhich(const Type* type,
 }
 
 bool IsPointerOrReferenceAsWritten(const Type* type) {
-  type = RemoveElaboration(type);
+  type = Desugar(type);
   return isa<PointerType>(type) || isa<LValueReferenceType>(type);
 }
 
 const Type* RemovePointersAndReferencesAsWritten(const Type* type) {
-  type = RemoveElaboration(type);
+  type = Desugar(type);
   while (isa<PointerType>(type) ||
          isa<LValueReferenceType>(type)) {
     type = type->getPointeeType().getTypePtr();
@@ -1215,7 +1234,7 @@ const Type* RemovePointerFromType(const Type* type) {
   if (!IsPointerOrReferenceAsWritten(type)) {
     return nullptr;
   }
-  type = RemoveElaboration(type);
+  type = Desugar(type);
   type = type->getPointeeType().getTypePtr();
   return type;
 }
@@ -1232,13 +1251,10 @@ const Type* RemovePointersAndReferences(const Type* type) {
 }
 
 static const NamedDecl* TypeToDeclImpl(const Type* type, bool as_written) {
-  // Get past all the 'class' and 'struct' prefixes, and namespaces.
-  type = RemoveElaboration(type);
-
-  // Read past SubstTemplateTypeParmType (this can happen if a
-  // template function returns the tpl-arg type: e.g. for
-  // 'T MyFn<T>() {...}; MyFn<X>.a', the type of MyFn<X> will be a Subst.
-  type = RemoveSubstTemplateTypeParm(type);
+  // Read past SubstTemplateTypeParmType (this can happen if a function
+  // template returns the tpl-arg type: e.g. for 'T MyFn<T>() {...}; MyFn<X>.a',
+  // the type of MyFn<X> will be a substitution) as well as any elaboration.
+  type = Desugar(type);
 
   CHECK_(!isa<ObjCObjectType>(type) && "IWYU doesn't support Objective-C");
 
@@ -1254,15 +1270,14 @@ static const NamedDecl* TypeToDeclImpl(const Type* type, bool as_written) {
 
   if (const TypedefType* typedef_type = DynCastFrom(type)) {
     return typedef_type->getDecl();
-  } else if (const InjectedClassNameType* icn_type
-             = type->getAs<InjectedClassNameType>()) {
+  } else if (const InjectedClassNameType* icn_type =
+                 type->getAs<InjectedClassNameType>()) {
     return icn_type->getDecl();
   } else if (as_written && template_decl &&
              isa<TypeAliasTemplateDecl>(template_decl)) {
     // A template type alias
     return template_decl;
-  } else if (const RecordType* record_type
-             = type->getAs<RecordType>()) {
+  } else if (const RecordType* record_type = type->getAs<RecordType>()) {
     return record_type->getDecl();
   } else if (const TagType* tag_type = DynCastFrom(type)) {
     return tag_type->getDecl();    // probably just enums
@@ -1273,7 +1288,7 @@ static const NamedDecl* TypeToDeclImpl(const Type* type, bool as_written) {
     // TODO(csilvers): is it possible to map from fn type to fn decl?
     (void)function_type;
     return nullptr;
-  }  else {
+  } else {
     return nullptr;
   }
 }
@@ -1294,7 +1309,7 @@ const Type* RemoveReferenceAsWritten(const Type* type) {
 }
 
 bool HasImplicitConversionConstructor(const Type* type) {
-  type = RemoveElaboration(type);  // get rid of the class keyword
+  type = Desugar(type);
   if (isa<PointerType>(type))
     return false;  // can't implicitly convert to a pointer
   if (isa<LValueReferenceType>(type) &&
@@ -1316,23 +1331,23 @@ bool HasImplicitConversionConstructor(const Type* type) {
 map<const clang::Type*, const clang::Type*>
 GetTplTypeResugarMapForClassNoComponentTypes(const clang::Type* type) {
   map<const Type*, const Type*> retval;
-  type = RemoveElaboration(type);  // get rid of the class keyword
-  const TemplateSpecializationType* tpl_spec_type = DynCastFrom(type);
-  if (!tpl_spec_type)
+  const auto* tpl_spec_type = type->getAs<TemplateSpecializationType>();
+  if (!tpl_spec_type) {
     return retval;
+  }
 
   // Pull the template arguments out of the specialization type. If this is
   // a ClassTemplateSpecializationDecl specifically, we want to
   // get the arguments therefrom to correctly handle default arguments.
-  const TemplateArgument* tpl_args = tpl_spec_type->getArgs();
-  unsigned num_args = tpl_spec_type->getNumArgs();
+  llvm::ArrayRef<TemplateArgument> tpl_args = tpl_spec_type->template_arguments();
+  unsigned num_args = tpl_args.size();
 
   const NamedDecl* decl = TypeToDeclAsWritten(tpl_spec_type);
   const auto* cls_tpl_decl = dyn_cast<ClassTemplateSpecializationDecl>(decl);
   if (cls_tpl_decl) {
     const TemplateArgumentList& tpl_arg_list =
         cls_tpl_decl->getTemplateInstantiationArgs();
-    tpl_args = tpl_arg_list.data();
+    tpl_args = tpl_arg_list.asArray();
     num_args = tpl_arg_list.size();
   }
 
@@ -1342,9 +1357,9 @@ GetTplTypeResugarMapForClassNoComponentTypes(const clang::Type* type) {
   //   template <typename R, typename A1> struct Foo<R(A1)> { ... }
   set<unsigned> explicit_args;   // indices into tpl_args we've filled
   TypeEnumerator type_enumerator;
-  for (unsigned i = 0; i < tpl_spec_type->getNumArgs(); ++i) {
-    set<const Type*> arg_components
-        = type_enumerator.Enumerate(tpl_spec_type->getArg(i));
+  for (unsigned i = 0; i < tpl_spec_type->template_arguments().size(); ++i) {
+    set<const Type*> arg_components =
+        type_enumerator.Enumerate(tpl_spec_type->template_arguments()[i]);
     // Go through all template types mentioned in the arg-as-written,
     // and compare it against each of the types in the template decl
     // (the latter are all desugared).  If there's a match, update
@@ -1352,7 +1367,7 @@ GetTplTypeResugarMapForClassNoComponentTypes(const clang::Type* type) {
     for (const Type* type : arg_components) {
       for (unsigned i = 0; i < num_args; ++i) {
         if (const Type* arg_type = GetTemplateArgAsType(tpl_args[i])) {
-          if (GetCanonicalType(type) == arg_type) {
+          if (GetCanonicalType(type) == GetCanonicalType(arg_type)) {
             retval[arg_type] = type;
             VERRS(6) << "Adding a template-class type of interest: "
                      << PrintableType(arg_type) << " -> " << PrintableType(type)
@@ -1382,6 +1397,10 @@ map<const clang::Type*, const clang::Type*> GetTplTypeResugarMapForClass(
     const clang::Type* type) {
   return ResugarTypeComponents(  // add in the decomposition of retval
       GetTplTypeResugarMapForClassNoComponentTypes(type));
+}
+
+bool CanBeOpaqueDeclared(const clang::EnumType* type) {
+  return type->getDecl()->isFixed();
 }
 
 // --- Utilities for Stmt.
@@ -1466,14 +1485,13 @@ const CXXDestructorDecl* GetSiblingDestructorFor(
 
 const FunctionType* GetCalleeFunctionType(CallExpr* expr) {
   const Type* callee_type = expr->getCallee()->getType().getTypePtr();
-  if (const PointerType* ptr_type
-      = callee_type->getAs<PointerType>()) {
+  if (const PointerType* ptr_type = callee_type->getAs<PointerType>()) {
     callee_type = ptr_type->getPointeeType().getTypePtr();
-  } else if (const BlockPointerType* bptr_type
-             = callee_type->getAs<BlockPointerType>()) {
+  } else if (const BlockPointerType* bptr_type =
+                 callee_type->getAs<BlockPointerType>()) {
     callee_type = bptr_type->getPointeeType().getTypePtr();
-  } else if (const MemberPointerType* mptr_type
-             = callee_type->getAs<MemberPointerType>()) {
+  } else if (const MemberPointerType* mptr_type =
+                 callee_type->getAs<MemberPointerType>()) {
     callee_type = mptr_type->getPointeeType().getTypePtr();
   }
   return callee_type->getAs<FunctionType>();
@@ -1492,36 +1510,25 @@ TemplateArgumentListInfo GetExplicitTplArgs(const Expr* expr) {
   return explicit_tpl_args;
 }
 
-// This is lifted from CastExpr::getConversionFunction, and naively simplified
-// to work around bugs with consteval conversion functions.
-const NamedDecl* GetConversionFunction(const CastExpr* expr) {
-  const Expr *subexpr = nullptr;
-  for (const CastExpr *e = expr; e; e = dyn_cast<ImplicitCastExpr>(subexpr)) {
-    // Skip through implicit sema nodes.
-    subexpr = IgnoreExprNodes(e->getSubExpr(), [](Expr* expr) {
-      // FullExpr is ConstantExpr + ExprWithCleanups.
-      if (auto* fe = dyn_cast<FullExpr>(expr))
-        return fe->getSubExpr();
+string GetKindName(const Decl* decl) {
+  return string(decl->getDeclKindName()) + "Decl";
+}
 
-      if (auto* mte = dyn_cast<MaterializeTemporaryExpr>(expr))
-        return mte->getSubExpr();
+string GetKindName(const Stmt* stmt) {
+  return stmt->getStmtClassName();
+}
 
-      if (auto* bte = dyn_cast<CXXBindTemporaryExpr>(expr))
-        return bte->getSubExpr();
+string GetKindName(const Type* type) {
+  return string(type->getTypeClassName()) + "Type";
+}
 
-      return expr;
-    });
+string GetKindName(const TypeLoc typeloc) {
+  return string(typeloc.getTypePtr()->getTypeClassName()) + "TypeLoc";
+}
 
-    // Now resolve the conversion function depending on cast kind.
-    if (e->getCastKind() == clang::CK_ConstructorConversion)
-      return cast<CXXConstructExpr>(subexpr)->getConstructor();
-
-    if (e->getCastKind() == clang::CK_UserDefinedConversion) {
-      if (auto *MCE = dyn_cast<CXXMemberCallExpr>(subexpr))
-        return MCE->getMethodDecl();
-    }
-  }
-  return nullptr;
+bool IsDeclaredInsideFunction(const Decl* decl) {
+  const DeclContext* decl_ctx = decl->getDeclContext();
+  return isa<FunctionDecl>(decl_ctx);
 }
 
 }  // namespace include_what_you_use
